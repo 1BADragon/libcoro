@@ -1,0 +1,6 @@
+#ifndef CORO_SCHEDULER_H
+#define CORO_SCHEDULER_H
+
+
+
+#endif // CORO_SCHEDULER_H
