@@ -1,7 +1,8 @@
 #ifndef CORO_EV_H
 #define CORO_EV_H
 
-#include <scheduler.h>
+struct coro_task;
+int coro_event_trigger(struct coro_task *t, int revent);
 
 #define EV_CB_DECLARE(type)   struct coro_task *cb;
 #define EV_CB_INVOKE(watcher, revents) coro_event_trigger ((watcher)->cb, revents)

@@ -3,6 +3,6 @@
 
 struct coro_ctx;
 
-void swap_coro(struct coro_ctx *to, struct coro_ctx *from);
+void coro_swap(struct coro_ctx *to, struct coro_ctx *from);
 
 #endif // CORO_CTX_H

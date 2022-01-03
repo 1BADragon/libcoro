@@ -70,4 +70,10 @@ Thumbs.db
 # --------
 *.dll
 *.exe
+
+# Custom
+# --------
+*.user
 build/
+.cache/
+compile_commands.json

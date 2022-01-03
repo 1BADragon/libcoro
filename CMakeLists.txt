@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.5)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(coro LANGUAGES C ASM)
 
+option(BUILD_TESTS "Build testing code" ON)
+
 include(CheckSymbolExists)
 include(deps/configure_ev.cmake)
 
@@ -10,7 +12,7 @@ set(coro_srcs
     include/coro.h
 
     src/task.h src/task.c src/macro.h
-    src/scheduler.h src/coro_ctx.h
+    src/scheduler.h src/coro_ctx.h src/coro_int.h
 
     src/coro_ev.h src/coro_ev.c src/list.h
     src/coro.c src/scheduler.c
@@ -29,7 +31,13 @@ target_include_directories(coro
         ${PROJECT_SOURCE_DIR}
         src/arch/${CMAKE_SYSTEM_PROCESSOR}
     )
+target_link_libraries(coro PUBLIC m)
 
 set_source_files_properties(src/coro_ev.c
     PROPERTIES
     INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/deps/libev;${CMAKE_CURRENT_BINARY_DIR}/deps/libev")
+
+if (BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
