@@ -8,6 +8,7 @@
 #pragma GCC diagnostic ignored "-Wcomment"
 #pragma GCC diagnostic ignored "-Wparentheses"
 #pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
 
 #include <deps/libev/ev.c>
 

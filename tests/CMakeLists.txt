@@ -6,3 +6,4 @@ macro(new_test TEST_NAME)
 endmacro()
 
 new_test(hello hello_world.c)
+new_test(multi_hello multi_hello.c)

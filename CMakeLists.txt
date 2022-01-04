@@ -4,6 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(coro LANGUAGES C ASM)
 
 option(BUILD_TESTS "Build testing code" ON)
+option(MEM_SAN "Use memory sanitizer" OFF)
 
 include(CheckSymbolExists)
 include(deps/configure_ev.cmake)
@@ -32,6 +33,11 @@ target_include_directories(coro
         src/arch/${CMAKE_SYSTEM_PROCESSOR}
     )
 target_link_libraries(coro PUBLIC m)
+
+if (MEM_SAN)
+    target_compile_options(coro PUBLIC -fsanitize=address)
+    target_link_options(coro PUBLIC -fsanitize=address)
+endif()
 
 set_source_files_properties(src/coro_ev.c
     PROPERTIES

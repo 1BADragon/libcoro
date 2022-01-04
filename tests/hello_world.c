@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <coro.h>
 
-static void *hello_world(void *arg)
+coro static void *hello_world(void *arg)
 {
     (void) arg;
+
+    coro_yeild();
     printf("Hello, World!\n");
 
     return NULL;
@@ -11,7 +13,9 @@ static void *hello_world(void *arg)
 
 int main()
 {
+    int rc;
     struct coro_loop *loop;
+    struct coro_task *task;
 
     loop = coro_new_loop(0);
 
@@ -19,7 +23,10 @@ int main()
         return -1;
     }
 
-    coro_create_task(loop, hello_world, NULL);
+    task = coro_create_task(loop, hello_world, NULL);
+    rc = coro_run(loop);
 
-    return coro_run(loop);
+    coro_task_join(task);
+    coro_free_loop(loop);
+    return rc;
 }

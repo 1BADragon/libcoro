@@ -22,15 +22,19 @@ enum coro_watcher_type {
     CORO_NONE,
     CORO_IO,
     CORO_IDLE,
+    CORO_ASYNC,
 };
 
 union coro_watchers {
     ev_io io;
     ev_idle idle;
+    ev_async async;
 };
 
 struct coro_task {
     struct coro_scheduler *sched;
+    struct list_head node;
+
     int last_revent;
 
     coro_task_entry_f entry;
@@ -39,6 +43,9 @@ struct coro_task {
 
     enum coro_watcher_type watcher_type;
     union coro_watchers ev_watcher;
+
+    // Set by those who are waiting for this task
+    ev_async *waiter;
 
     struct coro_ctx ctx;
     enum coro_task_state state;

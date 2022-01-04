@@ -1,5 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <assert.h>
+
+#include <coro_int.h>
 #include <coro_arch.h>
 #include <scheduler.h>
 #include <task.h>
@@ -7,6 +10,7 @@
 struct coro_scheduler {
     struct coro_ctx sched_ctx;
     struct coro_task *active;
+    struct list_head running;
 
     struct coro_loop *loop;
 };
@@ -24,6 +28,8 @@ struct coro_scheduler *coro_scheduler_new()
 
     new_cs->active = NULL;
 
+    INIT_LIST_HEAD(&new_cs->running);
+
     return new_cs;
 
 exit:
@@ -33,8 +39,17 @@ exit:
 
 void coro_scheduler_free(struct coro_scheduler *sched)
 {
+    struct coro_task *curr;
+    struct coro_task *_safe;
+
     if (!sched) {
         return;
+    }
+
+    // Delete all running task contexts
+    list_for_each_entry_safe(curr, _safe, &sched->running, node) {
+        list_del(&curr->node);
+        task_free(curr);
     }
 
     free(sched);
@@ -42,6 +57,8 @@ void coro_scheduler_free(struct coro_scheduler *sched)
 
 int coro_event_trigger(struct coro_task *t, int revent)
 {
+    printf("%s: task: %p\n", __func__, t);
+
     t->last_revent = revent;
 
     // Reset the watcher state
@@ -85,6 +102,12 @@ void coro_sched_set_loop(struct coro_scheduler *s,
     s->loop = l;
 }
 
+void coro_swap_to_sched(struct coro_scheduler *sched)
+{
+    assert(sched->active);
+    coro_swap(&sched->sched_ctx, &sched->active->ctx);
+}
+
 struct coro_task *coro_sched_active(struct coro_scheduler *s)
 {
     return s->active;
@@ -99,11 +122,23 @@ static void coro_start(struct coro_task *t)
 {
     t->state = TASK_STATE_RUNNING;
 
+    // at this point t->sched is set so add this task to its list
+    list_add_tail(&t->node, &t->sched->running);
+
     // call the coroutine entry
     t->ret = t->entry(t->arg);
 
-    // Kill any pending watcher for this task;
+    // the coro is done, remove from running list
+    list_del(&t->node);
+
+    // Kill any pending watcher for this task, there should not be one but
+    // do this anyway to prevent some crazyness in the event loop
     task_destroy_watcher(t);
+
+    // If another coroutine is waiting for this one to finish then signal it
+    if (t->waiter) {
+        ev_async_send(coro_loop_backend(coro_sched_loop(t->sched)), t->waiter);
+    }
 
     t->state = TASK_STATE_FINISHED;
 

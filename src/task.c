@@ -22,6 +22,11 @@ struct coro_task *task_new(size_t stack_size)
     }
     task->state = TASK_STATE_INIT;
 
+    // Make sure this is NULL
+    task->waiter = NULL;
+
+    printf("%s: task: %p\n", __func__, task);
+
     return task;
 error:
     task_free(task);
@@ -58,9 +63,13 @@ void task_destroy_watcher(struct coro_task *t)
     case CORO_IDLE:
         ev_idle_stop(loop, &t->ev_watcher.idle);
         break;
+    case CORO_ASYNC:
+        ev_async_stop(loop, &t->ev_watcher.async);
+        break;
     }
 
     t->watcher_type = CORO_NONE;
+    memset(&t->ev_watcher, 0, sizeof(t->ev_watcher));
 }
 
 static int allocate_stack(struct coro_task *t, size_t size)
