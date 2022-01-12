@@ -7,3 +7,4 @@ endmacro()
 
 new_test(hello hello_world.c)
 new_test(multi_hello multi_hello.c)
+new_test(timer timer.c)

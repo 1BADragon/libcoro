@@ -12,7 +12,7 @@ include(deps/configure_ev.cmake)
 
 set(coro_srcs
     # main module functions
-    include/coro.h src/coro.c
+    include/coro.h src/coro.c src/coro_hooks.c
 
     # some header only things
     src/coro_ctx.h src/macro.h src/list.h

@@ -8,8 +8,6 @@
 #include <coro_ev.h>
 #include <task.h>
 
-#define DEFAULT_STACK_SIZE (4096 * 6)
-
 struct coro_loop {
     struct ev_loop *_loop;
 
@@ -29,12 +27,14 @@ enum coro_watcher_type {
     CORO_IO,
     CORO_IDLE,
     CORO_ASYNC,
+    CORO_TIMER,
 };
 
 union coro_watchers {
     ev_io io;
     ev_idle idle;
     ev_async async;
+    ev_timer timer;
 };
 
 struct coro_task {
@@ -81,13 +81,14 @@ static int allocate_stack(struct coro_task *t, size_t size);
 
 static void task_prepare_async(struct coro_task *t);
 static void task_prepare_idle(struct coro_task *t);
+static void task_prepare_timer(struct coro_task *t, ev_tstamp time);
 
 struct coro_loop *coro_new_loop(int flags)
 {
     (void) flags;
     struct coro_loop *c = NULL;
 
-    c = calloc(1, sizeof(struct coro_loop));
+    c = coro_zalloc(sizeof(struct coro_loop));
     if (!c) {
         goto error;
     }
@@ -99,6 +100,8 @@ struct coro_loop *coro_new_loop(int flags)
 
     c->active = NULL;
     INIT_LIST_HEAD(&c->tasks);
+
+    ev_set_allocator(coro_realloc);
 
     return c;
 
@@ -125,7 +128,7 @@ void coro_free_loop(struct coro_loop *c)
         ev_loop_destroy(c->_loop);
     }
 
-    free(c);
+    coro_free(c);
 }
 
 int coro_run(struct coro_loop *l)
@@ -163,7 +166,7 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
        loop = g_active_loop;
    }
 
-   task = task_new(DEFAULT_STACK_SIZE);
+   task = task_new(coro_stacksize());
 
     if (!task) {
        return NULL;
@@ -274,6 +277,19 @@ void coro_yeild()
     _curr_task = g_active_loop->active;
     task_prepare_idle(_curr_task);
 
+    coro_swap_to_sched();
+}
+
+void coro_sleep(unsigned long amnt)
+{
+    task_prepare_timer(g_active_loop->active, (ev_tstamp)amnt);
+    coro_swap_to_sched();
+}
+
+void coro_sleepms(unsigned long amnt)
+{
+    ev_tstamp t_amnt = (ev_tstamp)amnt;
+    task_prepare_timer(g_active_loop->active, t_amnt / (ev_tstamp)1000.);
     coro_swap_to_sched();
 }
 
@@ -392,7 +408,7 @@ static struct coro_task *task_new(size_t stack_size)
 {
     struct coro_task *task = NULL;
 
-    task = calloc(1, sizeof(struct coro_task));
+    task = coro_zalloc(sizeof(struct coro_task));
     if (!task) {
         goto error;
     }
@@ -429,7 +445,7 @@ static void task_free(struct coro_task *task)
         printf("Task %p has positive ref count: %d\n", task, task->ref_count);
     }
 
-    free(task);
+    coro_free(task);
 
     if (g_active_loop && list_empty(&g_active_loop->tasks)) {
         ev_break(g_active_loop->_loop, EVBREAK_ALL);
@@ -469,9 +485,7 @@ static void task_destroy_watcher(struct coro_task *t)
 
 static int allocate_stack(struct coro_task *t, size_t size)
 {
-    t->stack = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-                    -1, 0);
-
+    t->stack = coro_stackalloc(size);
     if (!t->stack) {
         return -1;
     }
@@ -501,4 +515,12 @@ static void task_prepare_idle(struct coro_task *t)
     t->watcher_type = CORO_IDLE;
     ev_idle_init(&t->ev_watcher.idle, t);
     ev_idle_start(t->owner->_loop, &t->ev_watcher.idle);
+}
+
+static void task_prepare_timer(struct coro_task *t, ev_tstamp time)
+{
+    t->ref_count++;
+    t->watcher_type = CORO_TIMER;
+    ev_timer_init(&t->ev_watcher.timer, t, time, 0);
+    ev_timer_start(t->owner->_loop, &t->ev_watcher.timer);
 }

@@ -46,4 +46,28 @@ void coro_await_many(struct coro_task **task, size_t len, enum coro_wait_how how
 // Generic yeild, resumes after swapping to the scheduler
 void coro_yeild();
 
+// Sleeping functions
+void coro_sleep(unsigned long amnt);
+void coro_sleepms(unsigned long amnt);
+
+// Coro hook functions
+void coro_hook_set_alloc(void *(*func)(long));
+void *coro_alloc(long size);
+void *coro_zalloc(long size);
+
+void coro_hook_set_free(void (*func)(void *));
+void coro_free(void *ptr);
+
+void coro_hook_set_realloc(void *(*func)(void *, unsigned long));
+void *coro_realloc(void *ptr, long s);
+
+void coro_hook_set_stacksize(long (*func)(void));
+long coro_stacksize(void);
+
+void coro_hook_set_stackalloc(void *(*func)(unsigned long));
+void *coro_stackalloc(unsigned long size);
+
+void coro_hook_set_stackunalloc(void (*func)(void *, unsigned long));
+void coro_stackunalloc(void *ptr, unsigned long size);
+
 #endif // CORO_H
