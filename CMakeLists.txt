@@ -5,18 +5,20 @@ project(coro LANGUAGES C ASM)
 
 option(BUILD_TESTS "Build testing code" ON)
 option(MEM_SAN "Use memory sanitizer" OFF)
+option(UB_SAN "Use undefined behavior sanitizer" OFF)
 
 include(CheckSymbolExists)
 include(deps/configure_ev.cmake)
 
 set(coro_srcs
-    include/coro.h
+    # main module functions
+    include/coro.h src/coro.c
 
-    src/task.h src/task.c src/macro.h
-    src/scheduler.h src/coro_ctx.h src/coro_int.h
+    # some header only things
+    src/coro_ctx.h src/macro.h src/list.h
 
-    src/coro_ev.h src/coro_ev.c src/list.h
-    src/coro.c src/scheduler.c
+    # Custom config for libev
+    src/coro_ev.h src/coro_ev.c
 
     src/arch/${CMAKE_SYSTEM_PROCESSOR}/coro_swap.s
     src/arch/${CMAKE_SYSTEM_PROCESSOR}/coro_arch.h
@@ -37,6 +39,11 @@ target_link_libraries(coro PUBLIC m)
 if (MEM_SAN)
     target_compile_options(coro PUBLIC -fsanitize=address)
     target_link_options(coro PUBLIC -fsanitize=address)
+endif()
+
+if (UB_SAN)
+    target_compile_options(coro PUBLIC -fsanitize=undefined)
+    target_link_options(coro PUBLIC -fsanitize=undefined)
 endif()
 
 set_source_files_properties(src/coro_ev.c

@@ -21,6 +21,7 @@ struct coro_loop *coro_new_loop(int flags);
 void coro_free_loop(struct coro_loop *l);
 int coro_run(struct coro_loop *l);
 struct coro_loop *coro_current(void);
+struct coro_task *coro_current_task(void);
 
 // Task building functions
 struct coro_task *coro_create_task(struct coro_loop *loop,

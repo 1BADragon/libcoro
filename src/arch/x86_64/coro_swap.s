@@ -1,7 +1,7 @@
 
-.type coro_swap, function
-.global coro_swap
-coro_swap: 
+.type coro_swap_ctx, function
+.global coro_swap_ctx
+coro_swap_ctx:
    # collect the return address
    movq     0(%rsp), %rdx 
 
