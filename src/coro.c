@@ -9,6 +9,12 @@
 #include <coro_ev.h>
 #include <task.h>
 
+#ifdef MULTI_THREAD
+#define THREAD_LOCAL __thread
+#else
+#define THREAD_LOCAL
+#endif
+
 struct coro_loop {
     struct ev_loop *_loop;
 
@@ -72,7 +78,7 @@ struct coro_queue {
     ev_async *sig;
 };
 
-static struct coro_loop *g_active_loop;
+THREAD_LOCAL static struct coro_loop *g_active_loop;
 
 static int coro_event_trigger(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
@@ -89,7 +95,7 @@ static int allocate_stack(struct coro_task *t, size_t size);
 static void task_prepare_async(struct coro_task *t);
 static void task_prepare_idle(struct coro_task *t);
 static void task_prepare_timer(struct coro_task *t, ev_tstamp time);
-static void task_prepare_io(struct coro_task *t, int fd, enum coro_fd_wait_how how);
+static void task_prepare_io(struct coro_task *t, int fd, int how);
 
 // Queue helpers
 static struct coro_queue_data *queue_data_build(void *data, void (*)(void *));
@@ -154,6 +160,10 @@ void coro_free_loop(struct coro_loop *c)
 int coro_run(struct coro_loop *l)
 {
     int rc;
+
+    if (g_active_loop) {
+        return -1;
+    }
 
     g_active_loop = l;
     rc = ev_run(l->_loop, 0);
@@ -460,7 +470,7 @@ void coro_sleepms(unsigned long amnt)
     coro_swap_to_sched();
 }
 
-void coro_wait_fd(int fd, enum coro_fd_wait_how how)
+void coro_wait_fd(int fd, int how)
 {
     task_prepare_io(g_active_loop->active, fd, how);
     coro_swap_to_sched();
@@ -870,16 +880,18 @@ static void task_prepare_timer(struct coro_task *t, ev_tstamp time)
     ev_timer_start(t->owner->_loop, &t->ev_watcher.timer);
 }
 
-static void task_prepare_io(struct coro_task *t, int fd, enum coro_fd_wait_how how)
+static void task_prepare_io(struct coro_task *t, int fd, int how)
 {
-    int events;
-    if (CORO_FD_WAIT_READ == how) {
-        events = EV_READ;
-    } else if (CORO_FD_WAIT_WRITE == how) {
-        events = EV_WRITE;
-    } else {
-        assert(false);
+    int events = 0;
+    if (CORO_FD_WAIT_READ & how) {
+        events |= EV_READ;
     }
+
+    if (CORO_FD_WAIT_WRITE & how) {
+        events |= EV_WRITE;
+    }
+
+    assert(events);
 
     t->watcher_type = CORO_IO;
     ev_io_init(&t->ev_watcher.io, t, fd, events);
