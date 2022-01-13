@@ -7,11 +7,12 @@
 
 #include <sys/socket.h>
 
-// dumb macro to help dev's note coro's
+// dumb macro to help dev's note coroutines. Does not need to be used.
 #define coro
 
 struct coro_loop;
 struct coro_task;
+struct coro_queue;
 
 typedef void *(*coro_task_entry_f)(void *);
 
@@ -52,6 +53,13 @@ const char *coro_task_name(struct coro_task *task);
 int coro_cancel_task(struct coro_task *task);
 // Wait from outside the loop
 void *coro_task_join(struct coro_task *task);
+
+// Queue functions
+struct coro_queue *coro_queue_new(struct coro_loop *loop);
+void coro_queue_delete(struct coro_queue *queue);
+int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *));
+void *coro_queue_pop(struct coro_queue *queue);
+void *coro_queue_pop_nowait(struct coro_queue *queue);
 
 // Wait from within the loop (as a coro)
 // Cleans the awaited task

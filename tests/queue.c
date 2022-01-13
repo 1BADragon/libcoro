@@ -1,56 +1,48 @@
 #define _GNU_SOURCE
 #include <stdio.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <string.h>
 #include <coro.h>
 
 coro static void *reader(void *data)
 {
-    int rc;
-    char c;
-    int fd = *(int *)data;
+    struct coro_queue *queue = data;
 
     for (;;) {
-        rc = coro_read(fd, &c, 1);
-
-        if (rc <= 0) {
+        char *c = coro_queue_pop(queue);
+        if (!c) {
             break;
         }
-
-        putc(c, stdout);
+        putc(*c, stdout);
         fflush(stdout);
     }
-
-    close(fd);
 
     return NULL;
 }
 
 coro static void *writer(void *data)
 {
+    struct coro_queue *queue = data;
+
     const char *message = "This is a test message!!!\n";
 
     for (size_t i = 0; i < strlen(message); ++i) {
-        coro_write(*(int *)data, &message[i], 1);
+        coro_queue_push(queue, (void *)&message[i], NULL);
         coro_sleepms(10);
     }
 
-    close(*(int *)data);
+    coro_queue_delete(queue);
 
     return NULL;
 }
 
 int main()
 {
-    int fd[2];
-
-    pipe2(fd, O_NONBLOCK);
-
     struct coro_loop *loop = coro_new_loop(0);
 
-    struct coro_task *rt = coro_create_task(loop, reader, &fd[0]);
-    struct coro_task *wt = coro_create_task(loop, writer, &fd[1]);
+    struct coro_queue *queue = coro_queue_new(loop);
+
+    struct coro_task *rt = coro_create_task(loop, reader, queue);
+    struct coro_task *wt = coro_create_task(loop, writer, queue);
 
     coro_run(loop);
     coro_task_join(rt);

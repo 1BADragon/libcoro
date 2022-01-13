@@ -30,3 +30,4 @@ coro_swap_ctx:
    movq     0(%rsi), %rsi
 
    jmp      *%rsi
+

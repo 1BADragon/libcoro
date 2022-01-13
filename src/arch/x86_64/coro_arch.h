@@ -17,4 +17,9 @@ struct coro_ctx {
     void *rdi;
 };
 
+void coro_ctx_set_arg1(struct coro_ctx *ctx, void *val)
+{
+    ctx->rdi = val;
+}
+
 #endif

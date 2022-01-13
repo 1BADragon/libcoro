@@ -15,6 +15,7 @@ struct coro_loop {
     struct coro_ctx sched_ctx;
     struct coro_task *active;
     struct list_head tasks;
+    struct list_head queues;
 };
 
 enum coro_watcher_type {
@@ -55,9 +56,20 @@ struct coro_task {
     size_t stack_size;
 
     char *name;
+};
 
-    // for debugging
-    int ref_count;
+struct coro_queue_data {
+    struct list_head node;
+    void *data;
+    void (*free_f)(void *);
+};
+
+struct coro_queue {
+    struct coro_loop *parent;
+    struct list_head node;
+
+    struct list_head data;
+    ev_async *sig;
 };
 
 static struct coro_loop *g_active_loop;
@@ -79,6 +91,10 @@ static void task_prepare_idle(struct coro_task *t);
 static void task_prepare_timer(struct coro_task *t, ev_tstamp time);
 static void task_prepare_io(struct coro_task *t, int fd, enum coro_fd_wait_how how);
 
+// Queue helpers
+static struct coro_queue_data *queue_data_build(void *data, void (*)(void *));
+static void queue_data_destroy(struct coro_queue_data *data);
+
 struct coro_loop *coro_new_loop(int flags)
 {
     (void) flags;
@@ -96,6 +112,7 @@ struct coro_loop *coro_new_loop(int flags)
 
     c->active = NULL;
     INIT_LIST_HEAD(&c->tasks);
+    INIT_LIST_HEAD(&c->queues);
 
     ev_set_allocator(coro_realloc);
 
@@ -110,6 +127,8 @@ void coro_free_loop(struct coro_loop *c)
 {
     struct coro_task *curr_task;
     struct coro_task *_safe_task;
+    struct coro_queue *curr_queue;
+    struct coro_queue *_safe_queue;
 
     if (NULL == c) {
         return;
@@ -118,6 +137,11 @@ void coro_free_loop(struct coro_loop *c)
     list_for_each_entry_safe(curr_task, _safe_task, &c->tasks, node) {
         list_del(&curr_task->node);
         task_free(curr_task);
+    }
+
+    list_for_each_entry_safe(curr_queue, _safe_queue, &c->queues, node) {
+        list_del(&curr_queue->node);
+        coro_queue_delete(curr_queue);
     }
 
     if (c->_loop) {
@@ -251,6 +275,115 @@ void *coro_task_join(struct coro_task *task)
     task_free(task);
 
     return ret;
+}
+
+struct coro_queue *coro_queue_new(struct coro_loop *loop)
+{
+    struct coro_queue *new_queue;
+
+    if (NULL == loop) {
+        if (g_active_loop == NULL) {
+            errno = EINVAL;
+            return NULL;
+        }
+
+        loop = g_active_loop;
+    }
+
+    new_queue = coro_zalloc(sizeof(struct coro_queue));
+    if (!new_queue) {
+        return NULL;
+    }
+
+    new_queue->parent = loop;
+    new_queue->sig = NULL;
+
+    INIT_LIST_HEAD(&new_queue->data);
+    list_add_tail(&new_queue->node, &loop->queues);
+    return new_queue;
+}
+
+void coro_queue_delete(struct coro_queue *queue)
+{
+    struct coro_queue_data *data;
+    struct coro_queue_data *_safe_data;
+
+    list_for_each_entry_safe(data, _safe_data, &queue->data, node) {
+        list_del(&data->node);
+        queue_data_destroy(data);
+    }
+
+    if (queue->sig) {
+        ev_feed_event(queue->parent->_loop, queue->sig, EV_CUSTOM);
+    }
+
+    list_del(&queue->node);
+
+    coro_free(queue);
+}
+
+int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *))
+{
+    struct coro_queue_data *chunk = queue_data_build(data, free_f);
+
+    if (!chunk) {
+        return -1;
+    }
+
+    list_add_tail(&chunk->node, &queue->data);
+
+    if (queue->sig) {
+        ev_async_send(queue->parent->_loop, queue->sig);
+    }
+
+    return 0;
+}
+
+void *coro_queue_pop(struct coro_queue *queue)
+{
+    void *ret;
+    struct coro_task *curr_task;
+
+    curr_task = coro_current_task();
+    if (!curr_task) {
+        return NULL;
+    }
+
+    if (queue->sig) {
+        return NULL;
+    }
+
+    for (;;) {
+        ret = coro_queue_pop_nowait(queue);
+        if (ret) {
+            return ret;
+        }
+
+        task_prepare_async(curr_task);
+        queue->sig = &curr_task->ev_watcher.async;
+        coro_swap_to_sched();
+        if (curr_task->last_revent == EV_CUSTOM) {
+            // indicates the queue was closed..
+            return NULL;
+        }
+        queue->sig = NULL;
+    }
+}
+
+void *coro_queue_pop_nowait(struct coro_queue *queue)
+{
+    struct coro_queue_data *data;
+
+    data = list_first_entry_or_null(&queue->data, struct coro_queue_data, node);
+
+    if (!data) {
+        return NULL;
+    }
+
+    void *ptr = data->data;
+
+    queue_data_destroy(data);
+    return ptr;
 }
 
 void *coro_await(struct coro_task *task)
@@ -542,7 +675,7 @@ static int coro_event_trigger(struct coro_task *t, int revent)
         // set the required values
         t->ctx.sp = t->stack_top;
         t->ctx.pc = &coro_start;
-        t->ctx.rdi = t;
+        coro_ctx_set_arg1(&t->ctx, t);
 
         // Set it to the new active coro
         t->owner->active = t;
@@ -634,7 +767,6 @@ static struct coro_task *task_new(size_t stack_size)
 
     // Make sure this is NULL
     task->waiter = NULL;
-    task->ref_count = 0;
     task->name = NULL;
 
     return task;
@@ -656,10 +788,6 @@ static void task_free(struct coro_task *task)
         munmap(task->stack, task->stack_size);
     }
 
-    if (task->ref_count > 0) {
-        printf("Task %p has positive ref count: %d\n", task, task->ref_count);
-    }
-
     if (task->name) {
         coro_free(task->name);
     }
@@ -679,10 +807,6 @@ static void task_destroy_watcher(struct coro_task *t)
     assert(t->owner);
 
     loop = t->owner->_loop;
-
-    if (t->watcher_type != CORO_NONE) {
-        t->ref_count--;
-    }
 
     switch (t->watcher_type) {
     case CORO_NONE:
@@ -727,7 +851,6 @@ static int allocate_stack(struct coro_task *t, size_t size)
 
 static void task_prepare_async(struct coro_task *t)
 {
-    t->ref_count++;
     t->watcher_type = CORO_ASYNC;
     ev_async_init(&t->ev_watcher.async, t);
     ev_async_start(t->owner->_loop, &t->ev_watcher.async);
@@ -735,7 +858,6 @@ static void task_prepare_async(struct coro_task *t)
 
 static void task_prepare_idle(struct coro_task *t)
 {
-    t->ref_count++;
     t->watcher_type = CORO_IDLE;
     ev_idle_init(&t->ev_watcher.idle, t);
     ev_idle_start(t->owner->_loop, &t->ev_watcher.idle);
@@ -743,7 +865,6 @@ static void task_prepare_idle(struct coro_task *t)
 
 static void task_prepare_timer(struct coro_task *t, ev_tstamp time)
 {
-    t->ref_count++;
     t->watcher_type = CORO_TIMER;
     ev_timer_init(&t->ev_watcher.timer, t, time, 0);
     ev_timer_start(t->owner->_loop, &t->ev_watcher.timer);
@@ -760,8 +881,30 @@ static void task_prepare_io(struct coro_task *t, int fd, enum coro_fd_wait_how h
         assert(false);
     }
 
-    t->ref_count++;
     t->watcher_type = CORO_IO;
     ev_io_init(&t->ev_watcher.io, t, fd, events);
     ev_io_start(t->owner->_loop, &t->ev_watcher.io);
+}
+
+static struct coro_queue_data *queue_data_build(void *data, void (*free_f)(void *))
+{
+    struct coro_queue_data *n = coro_zalloc(sizeof(struct coro_queue_data));
+
+    if (n) {
+        n->data = data;
+        n->free_f = free_f;
+    }
+
+    return n;
+}
+
+static void queue_data_destroy(struct coro_queue_data *data)
+{
+    if (data->free_f) {
+        data->free_f(data->data);
+    }
+
+    list_del(&data->node);
+
+    coro_free(data);
 }
