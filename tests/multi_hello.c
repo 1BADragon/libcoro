@@ -38,7 +38,7 @@ coro static void *multi_entry(void *arg)
         tasks[i] = coro_create_task(NULL, print_val, &vals[i]);
     }
 
-    coro_await_many(tasks, N, CORO_WAIT_ALL);
+    coro_wait_tasks(tasks, N, CORO_TASK_WAIT_ALL);
 
     for (int i = 0; i < N; ++i) {
         coro_task_join(tasks[i]);

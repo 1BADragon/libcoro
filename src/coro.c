@@ -3,6 +3,7 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include <coro.h>
 #include <coro_ev.h>
@@ -14,12 +15,6 @@ struct coro_loop {
     struct coro_ctx sched_ctx;
     struct coro_task *active;
     struct list_head tasks;
-};
-
-enum coro_task_state {
-    TASK_STATE_INIT,
-    TASK_STATE_RUNNING,
-    TASK_STATE_FINISHED
 };
 
 enum coro_watcher_type {
@@ -59,6 +54,8 @@ struct coro_task {
     uint8_t *stack_top;
     size_t stack_size;
 
+    char *name;
+
     // for debugging
     int ref_count;
 };
@@ -68,9 +65,7 @@ static struct coro_loop *g_active_loop;
 static int coro_event_trigger(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
 static void coro_start(struct coro_task *t);
-
 static bool is_coro(struct coro_task *in_question);
-
 static void coro_swap(struct coro_ctx *in, struct coro_ctx *out);
 
 // Task functions
@@ -82,6 +77,7 @@ static int allocate_stack(struct coro_task *t, size_t size);
 static void task_prepare_async(struct coro_task *t);
 static void task_prepare_idle(struct coro_task *t);
 static void task_prepare_timer(struct coro_task *t, ev_tstamp time);
+static void task_prepare_io(struct coro_task *t, int fd, enum coro_fd_wait_how how);
 
 struct coro_loop *coro_new_loop(int flags)
 {
@@ -185,12 +181,50 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
 
 bool coro_task_running(struct coro_task *task)
 {
-    return task->state != TASK_STATE_FINISHED;
+    return coro_task_state(task) != TASK_STATE_FINISHED;
 }
 
 struct coro_loop *coro_task_parent(struct coro_task *task)
 {
     return task->owner;
+}
+
+enum coro_task_state coro_task_state(struct coro_task *task)
+{
+    return task->state;
+}
+
+int coro_task_set_name(struct coro_task *task, const char *name)
+{
+    if (NULL == name) {
+        if (task->name) {
+            coro_free(task->name);
+            task->name = NULL;
+        }
+        return 0;
+    }
+
+    size_t len = strlen(name);
+
+    void *ptr = coro_realloc(task->name, len + 1);
+    if (!ptr) {
+        // ENOMEM
+        return -1;
+    }
+
+    task->name = ptr;
+    memcpy(task->name, name, len);
+    task->name[len] = '\0';
+    return 0;
+}
+
+const char *coro_task_name(struct coro_task *task)
+{
+    if (!task) {
+        return "(null)";
+    }
+
+    return task->name;
 }
 
 int coro_cancel_task(struct coro_task *task)
@@ -223,13 +257,23 @@ void *coro_await(struct coro_task *task)
 {
     void *ret;
 
-    coro_await_many(&task, 1, CORO_WAIT_ALL);
+    coro_wait_tasks(&task, 1, CORO_TASK_WAIT_ALL);
     ret = task->ret;
     task_free(task);
     return ret;
 }
 
-void coro_await_many(struct coro_task **task, size_t len, enum coro_wait_how how)
+void coro_yeild()
+{
+    struct coro_task *_curr_task;
+
+    _curr_task = g_active_loop->active;
+    task_prepare_idle(_curr_task);
+
+    coro_swap_to_sched();
+}
+
+void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_how how)
 {
     struct coro_task *_curr_task;
     bool one_running;
@@ -257,7 +301,7 @@ void coro_await_many(struct coro_task **task, size_t len, enum coro_wait_how how
             coro_swap_to_sched();
         }
 
-    } while (one_running && CORO_WAIT_FIRST != how);
+    } while (one_running && CORO_TASK_WAIT_FIRST != how);
 
     // Remove this to prevent strange things
     _curr_task->watcher_type = CORO_NONE;
@@ -268,16 +312,6 @@ void coro_await_many(struct coro_task **task, size_t len, enum coro_wait_how how
     }
 
     task_destroy_watcher(_curr_task);
-}
-
-void coro_yeild()
-{
-    struct coro_task *_curr_task;
-
-    _curr_task = g_active_loop->active;
-    task_prepare_idle(_curr_task);
-
-    coro_swap_to_sched();
 }
 
 void coro_sleep(unsigned long amnt)
@@ -291,6 +325,186 @@ void coro_sleepms(unsigned long amnt)
     ev_tstamp t_amnt = (ev_tstamp)amnt;
     task_prepare_timer(g_active_loop->active, t_amnt / (ev_tstamp)1000.);
     coro_swap_to_sched();
+}
+
+void coro_wait_fd(int fd, enum coro_fd_wait_how how)
+{
+    task_prepare_io(g_active_loop->active, fd, how);
+    coro_swap_to_sched();
+}
+
+long coro_read(int fd, void *buf, unsigned long len)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(fd, CORO_FD_WAIT_READ);
+
+        rc = read(fd, buf, len);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_write(int fd, const void *buf, unsigned long len)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(fd, CORO_FD_WAIT_WRITE);
+
+        rc = write(fd, buf, len);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+int coro_accept(int sock, struct sockaddr *addr, socklen_t *addr_len)
+{
+    int rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_READ);
+
+        rc = accept(sock, addr, addr_len);
+        if (rc == -1 && (errno = EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_recv(int sock, void *buf, unsigned long len, int flags)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_READ);
+
+        rc = recv(sock, buf, len, flags);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_recvfrom(int sock, void *restrict buf, unsigned long len,
+                   int flags, struct sockaddr *restrict src_addr,
+                   socklen_t *restrict addrlen)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_READ);
+
+        rc = recvfrom(sock, buf, len, flags, src_addr, addrlen);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_recvmsg(int sock, struct msghdr *msg, int flags)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_READ);
+
+        rc = recvmsg(sock, msg, flags);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_send(int sock, const void *buf, unsigned long len, int flags)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_WRITE);
+
+        rc = send(sock, buf, len, flags);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_sendto(int sock, const void *buf, unsigned long len, int flags,
+                 const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_WRITE);
+
+        rc = sendto(sock, buf, len, flags, dest_addr, addrlen);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
+}
+
+long coro_sendmsg(int sock, const struct msghdr *msg, int flags)
+{
+    long rc;
+
+    for (;;) {
+        coro_wait_fd(sock, CORO_FD_WAIT_WRITE);
+
+        rc = sendmsg(sock, msg, flags);
+        if (rc == -1 && (errno == EAGAIN ||
+                         errno == EINTR)) {
+            continue;
+        }
+
+        break;
+    }
+
+    return rc;
 }
 
 /*************************
@@ -323,7 +537,7 @@ static int coro_event_trigger(struct coro_task *t, int revent)
     task_destroy_watcher(t);
 
     // called directly
-    switch(t->state) {
+    switch(coro_task_state(t)) {
     case TASK_STATE_INIT:
         // set the required values
         t->ctx.sp = t->stack_top;
@@ -421,6 +635,7 @@ static struct coro_task *task_new(size_t stack_size)
     // Make sure this is NULL
     task->waiter = NULL;
     task->ref_count = 0;
+    task->name = NULL;
 
     return task;
 error:
@@ -443,6 +658,10 @@ static void task_free(struct coro_task *task)
 
     if (task->ref_count > 0) {
         printf("Task %p has positive ref count: %d\n", task, task->ref_count);
+    }
+
+    if (task->name) {
+        coro_free(task->name);
     }
 
     coro_free(task);
@@ -477,6 +696,11 @@ static void task_destroy_watcher(struct coro_task *t)
     case CORO_ASYNC:
         ev_async_stop(loop, &t->ev_watcher.async);
         break;
+    case CORO_TIMER:
+        ev_timer_stop(loop, &t->ev_watcher.timer);
+        break;
+    default:
+        assert(false);
     }
 
     t->watcher_type = CORO_NONE;
@@ -523,4 +747,21 @@ static void task_prepare_timer(struct coro_task *t, ev_tstamp time)
     t->watcher_type = CORO_TIMER;
     ev_timer_init(&t->ev_watcher.timer, t, time, 0);
     ev_timer_start(t->owner->_loop, &t->ev_watcher.timer);
+}
+
+static void task_prepare_io(struct coro_task *t, int fd, enum coro_fd_wait_how how)
+{
+    int events;
+    if (CORO_FD_WAIT_READ == how) {
+        events = EV_READ;
+    } else if (CORO_FD_WAIT_WRITE == how) {
+        events = EV_WRITE;
+    } else {
+        assert(false);
+    }
+
+    t->ref_count++;
+    t->watcher_type = CORO_IO;
+    ev_io_init(&t->ev_watcher.io, t, fd, events);
+    ev_io_start(t->owner->_loop, &t->ev_watcher.io);
 }
