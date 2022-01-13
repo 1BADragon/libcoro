@@ -848,9 +848,6 @@ static int allocate_stack(struct coro_task *t, size_t size)
         return -1;
     }
 
-    // create a protected page to prevent stack overflow
-    mprotect(t->stack, 4096, PROT_NONE);
-
     t->stack_size = size;
     t->stack_top =
             (uint8_t *)((

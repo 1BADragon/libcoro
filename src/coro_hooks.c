@@ -142,7 +142,11 @@ static long coro_stacksize_def(void)
 
 static void *coro_stackalloc_def(unsigned long size)
 {
-    return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    // create a protected page to prevent stack overflow
+    mprotect(ptr, 4096, PROT_NONE);
+    return ptr;
 }
 
 static void coro_stackunalloc_def(void *ptr, unsigned long size)

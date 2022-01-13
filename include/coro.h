@@ -211,18 +211,46 @@ void *coro_await(struct coro_task *task);
 
 // Coro yeilding and IO functions
 // Generic yeild, resumes after swapping to the scheduler
+/**
+ * @brief Yeilds coroutine back to the scheduler. This gives other coroutines the opertinity to
+ * run. This can be used when running long algorithms with little IO.
+ */
 void coro_yeild();
 
 // Does not clean the awaited tasks so user can determine what to do
+/**
+ * @brief Waits for one or more task to complete. Can only be called from within a running
+ * coroutine.
+ * @param task An array of task context pointers.
+ * @param len The number of tasks in passed in tasks.
+ * @param how One of either CORO_TASK_WAIT_FIRST or CORO_TASK_WAIT_ALL to indicate whether to
+ * wait for one or all tasks to complete, respectivly.
+ */
 void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_how how);
 
 // Sleeping functions
+/**
+ * @brief Sleep coroutine for amnt number of seconds. During this time the calling coroutine is
+ * yielded.
+ */
 void coro_sleep(unsigned long amnt);
+
+/**
+ * @brief Same has coro_sleep except argument is in milliseconds.
+ */
 void coro_sleepms(unsigned long amnt);
 
 // Basic IO functions
+/**
+ * @brief Yeilds coroutine until at lease one in a given set of IO events occurs on the fd.
+ * @param fd File descriptor to wait for.
+ * @param how A bit feild of CORO_FD_WAIT_* at least one bit must be set.
+ */
 void coro_wait_fd(int fd, int how);
+
+// The following functions are all coroutine equivelents to there linux counterpart
 long coro_read(int fd, void *buf, unsigned long len);
+
 long coro_write(int fd, const void *buf, unsigned long len);
 
 int coro_accept(int sock, struct sockaddr *addr, socklen_t *addr_len);
@@ -237,6 +265,7 @@ long coro_sendto(int sock, const void *buf, unsigned long len, int flags,
 long coro_sendmsg(int sockfd, const struct msghdr *msg, int flags);
 
 // Coro hook functions
+// Can be used to change how the coroutine library requests system resources.
 void coro_hook_set_alloc(void *(*func)(long));
 void *coro_alloc(long size);
 void *coro_zalloc(long size);
