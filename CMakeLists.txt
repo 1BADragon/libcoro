@@ -4,6 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(coro LANGUAGES C ASM)
 
 option(BUILD_TESTS "Build testing code" ON)
+option(BUILD_SAMPLES "Build sample code" ON)
 option(MEM_SAN "Use memory sanitizer" OFF)
 option(UB_SAN "Use undefined behavior sanitizer" OFF)
 
@@ -49,6 +50,10 @@ endif()
 set_source_files_properties(src/coro_ev.c
     PROPERTIES
     INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/deps/libev;${CMAKE_CURRENT_BINARY_DIR}/deps/libev")
+
+if (BUILD_SAMPLES)
+    add_subdirectory(samples)
+endif()
 
 if (BUILD_TESTS)
     enable_testing()
