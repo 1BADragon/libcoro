@@ -4,7 +4,8 @@
 
 #include <sys/mman.h>
 
-#define DEFAULT_STACK_SIZE (4096 * 6)
+#define PAGE_SIZE (4096)
+#define DEFAULT_STACK_SIZE (PAGE_SIZE * 6)
 
 static void *coro_alloc_def(long size);
 static void coro_free_def(void *ptr);
@@ -142,10 +143,11 @@ static long coro_stacksize_def(void)
 
 static void *coro_stackalloc_def(unsigned long size)
 {
-    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void *ptr = mmap(NULL, size + (PAGE_SIZE * 2), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-    // create a protected page to prevent stack overflow
-    mprotect(ptr, 4096, PROT_NONE);
+    // create protected pages to prevent stack overflow
+    mprotect(ptr, PAGE_SIZE, PROT_NONE);
+    mprotect(ptr + size + PAGE_SIZE, 4096, PROT_NONE);
     return ptr;
 }
 
