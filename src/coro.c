@@ -32,16 +32,25 @@ enum coro_watcher_type {
     CORO_TIMER,
 };
 
-union coro_watchers {
-    ev_io io;
-    ev_idle idle;
-    ev_async async;
-    ev_timer timer;
+struct coro_trigger {
+    union {
+        ev_io io;
+        ev_idle idle;
+        ev_async async;
+        ev_timer timer;
+    };
+    enum coro_watcher_type type;
+    struct list_head tasks;
+    struct coro_loop *loop;
+    unsigned int ref_count;
 };
 
 struct coro_task {
     struct coro_loop *owner;
     struct list_head node;
+
+    struct list_head trigger_list;
+    struct coro_trigger *pending;
 
     int last_revent;
 
@@ -49,11 +58,8 @@ struct coro_task {
     void *arg;
     void *ret;
 
-    enum coro_watcher_type watcher_type;
-    union coro_watchers ev_watcher;
-
     // Set by those who are waiting for this task
-    ev_async *waiter;
+    struct coro_trigger *waiter;
 
     struct coro_ctx ctx;
     enum coro_task_state state;
@@ -75,27 +81,40 @@ struct coro_queue {
     struct list_head node;
 
     struct list_head data;
-    ev_async *sig;
+    struct coro_trigger *sig;
 };
+
+struct coro_sentinal {
+
+};
+
+static struct coro_sentinal g_sentinal;
 
 THREAD_LOCAL static struct coro_loop *g_active_loop;
 
 static int coro_event_trigger(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
 static void coro_start(struct coro_task *t);
-static bool is_coro(struct coro_task *in_question);
 static void coro_swap(struct coro_ctx *in, struct coro_ctx *out);
 
 // Task functions
 static struct coro_task *task_new(size_t stack_size);
 static void task_free(struct coro_task *task);
-static void task_destroy_watcher(struct coro_task *t);
+static void task_remove_pending(struct coro_task *task);
 static int allocate_stack(struct coro_task *t, size_t size);
 
-static void task_prepare_async(struct coro_task *t);
-static void task_prepare_idle(struct coro_task *t);
-static void task_prepare_timer(struct coro_task *t, ev_tstamp time);
-static void task_prepare_io(struct coro_task *t, int fd, int how);
+// Trigger Functions
+static struct coro_trigger *trigger_new(struct coro_loop *loop);
+static struct coro_trigger *trigger_new_async(struct coro_loop *loop);
+static struct coro_trigger *trigger_new_idle(struct coro_loop *loop);
+static struct coro_trigger *trigger_new_timer(struct coro_loop *loop, ev_tstamp time);
+static struct coro_trigger *trigger_new_io(struct coro_loop *loop, int fd, int how);
+
+static void trigger_add_watcher(struct coro_trigger *trigger, struct coro_task *task);
+static void trigger_del_watcher(struct coro_trigger *trigger, struct coro_task *task);
+static void trigger_inc_ref(struct coro_trigger *trigger);
+static void trigger_dec_ref(struct coro_trigger *trigger);
+static void trigger_destroy(struct coro_trigger *trigger);
 
 // Queue helpers
 static struct coro_queue_data *queue_data_build(void *data, void (*)(void *));
@@ -189,17 +208,18 @@ struct coro_task *coro_current_task()
 struct coro_task *coro_create_task(struct coro_loop *loop,
                                    coro_task_entry_f entry, void *arg)
 {
-   struct coro_task *task;
+    struct coro_task *task;
+    struct coro_trigger *trigger = NULL;
 
-   if (NULL == loop) {
-       assert(g_active_loop);
-       loop = g_active_loop;
-   }
+    if (NULL == loop) {
+        assert(g_active_loop);
+        loop = g_active_loop;
+    }
 
-   task = task_new(coro_stacksize());
+    task = task_new(coro_stacksize());
 
     if (!task) {
-       return NULL;
+        return NULL;
     }
 
     task->entry = entry;
@@ -208,8 +228,15 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
 
     list_add_tail(&task->node, &loop->tasks);
 
-    task_prepare_idle(task);
-    
+    trigger = trigger_new_idle(loop);
+    if (!trigger) {
+        task_free(task);
+        return NULL;
+    }
+
+    trigger_add_watcher(trigger, task);
+    trigger_dec_ref(trigger);
+
     return task;
 }
 
@@ -341,10 +368,7 @@ int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *)
     }
 
     list_add_tail(&chunk->node, &queue->data);
-
-    if (queue->sig) {
-        ev_async_send(queue->parent->_loop, queue->sig);
-    }
+    ev_async_send(queue->parent->_loop, &queue->sig->async);
 
     return 0;
 }
@@ -369,8 +393,7 @@ void *coro_queue_pop(struct coro_queue *queue)
             return ret;
         }
 
-        task_prepare_async(curr_task);
-        queue->sig = &curr_task->ev_watcher.async;
+        trigger_add_watcher(queue->sig, curr_task);
         coro_swap_to_sched();
         if (curr_task->last_revent == EV_CUSTOM) {
             // indicates the queue was closed..
@@ -409,9 +432,14 @@ void *coro_await(struct coro_task *task)
 void coro_yeild()
 {
     struct coro_task *_curr_task;
+    struct coro_trigger *trigger;
 
     _curr_task = g_active_loop->active;
-    task_prepare_idle(_curr_task);
+
+    trigger = trigger_new_idle(g_active_loop);
+
+    trigger_add_watcher(trigger, _curr_task);
+    trigger_dec_ref(trigger);
 
     coro_swap_to_sched();
 }
@@ -419,12 +447,16 @@ void coro_yeild()
 void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_how how)
 {
     struct coro_task *_curr_task;
+    struct coro_trigger *trigger;
     bool one_running;
 
     assert(g_active_loop);
 
     _curr_task = g_active_loop->active;
     assert(_curr_task);
+
+    trigger = trigger_new_async(g_active_loop);
+    trigger_add_watcher(trigger, _curr_task);
 
     do {
         int count = 0;
@@ -434,45 +466,56 @@ void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_ho
             if (coro_task_running(task[i])) {
                 assert(_curr_task->owner == g_active_loop);
                 count++;
-                task[i]->waiter = &_curr_task->ev_watcher.async;
+                task[i]->waiter = trigger;
                 one_running = true;
             }
         }
 
         if (one_running) {
-            task_prepare_async(_curr_task);
             coro_swap_to_sched();
         }
 
     } while (one_running && CORO_TASK_WAIT_FIRST != how);
 
     // Remove this to prevent strange things
-    _curr_task->watcher_type = CORO_NONE;
+    trigger_del_watcher(trigger, _curr_task);
 
     // Set all waiters back to NULL
     for (size_t i = 0; i < len; ++i) {
         task[i]->waiter = NULL;
     }
 
-    task_destroy_watcher(_curr_task);
+    trigger_dec_ref(trigger);
 }
 
 void coro_sleep(unsigned long amnt)
 {
-    task_prepare_timer(g_active_loop->active, (ev_tstamp)amnt);
+    struct coro_trigger *trigger;
+
+    trigger = trigger_new_timer(g_active_loop, (ev_tstamp)amnt);
+    trigger_add_watcher(trigger, coro_current_task());
+    trigger_dec_ref(trigger);
     coro_swap_to_sched();
 }
 
 void coro_sleepms(unsigned long amnt)
 {
     ev_tstamp t_amnt = (ev_tstamp)amnt;
-    task_prepare_timer(g_active_loop->active, t_amnt / (ev_tstamp)1000.);
+    struct coro_trigger *trigger;
+
+    trigger = trigger_new_timer(g_active_loop, t_amnt / (ev_tstamp)1000.);
+    trigger_add_watcher(trigger, coro_current_task());
+    trigger_dec_ref(trigger);
     coro_swap_to_sched();
 }
 
 void coro_wait_fd(int fd, int how)
 {
-    task_prepare_io(g_active_loop->active, fd, how);
+    struct coro_trigger *trigger;
+
+    trigger = trigger_new_io(g_active_loop, fd, how);
+    trigger_add_watcher(trigger, coro_current_task());
+    trigger_dec_ref(trigger);
     coro_swap_to_sched();
 }
 
@@ -656,11 +699,27 @@ long coro_sendmsg(int sock, const struct msghdr *msg, int flags)
 
 void coro_ev_cb_invoke(void *watcher, int revents)
 {
+    struct coro_trigger *trigger;
+    struct coro_task *task;
+    struct coro_task *_safe;
+
     ev_watcher *_watcher = watcher;
 
     // Need to check if i own the task/cb or if this in internal to libev
-    if (is_coro(_watcher->cb)) {
-        coro_event_trigger(_watcher->cb, revents);
+    if (_watcher->cb == &g_sentinal) {
+        trigger = (struct coro_trigger *)watcher;
+
+        assert(!list_empty(&trigger->tasks));
+
+        trigger_inc_ref(trigger);
+
+        list_for_each_entry_safe(task, _safe, &trigger->tasks, trigger_list) {
+            trigger_del_watcher(trigger, task);
+            coro_event_trigger(task, revents);
+        }
+
+        trigger_dec_ref(trigger);
+
     } else {
         // so this is dumb
         ((void (*)(struct ev_loop *, void *, int))_watcher->cb)(g_active_loop->_loop,
@@ -675,9 +734,6 @@ void coro_ev_cb_invoke(void *watcher, int revents)
 static int coro_event_trigger(struct coro_task *t, int revent)
 {
     t->last_revent = revent;
-
-    // Reset the watcher state
-    task_destroy_watcher(t);
 
     // called directly
     switch(coro_task_state(t)) {
@@ -722,32 +778,15 @@ static void coro_start(struct coro_task *t)
     // call the coroutine entry
     t->ret = t->entry(t->arg);
 
-    // Kill any pending watcher for this task, there should not be one but
-    // do this anyway to prevent some crazyness in the event loop
-    task_destroy_watcher(t);
-
     // If another coroutine is waiting for this one to finish then signal it
     if (t->waiter) {
-        ev_async_send(t->owner->_loop, t->waiter);
+        ev_async_send(t->owner->_loop, &t->waiter->async);
     }
 
     t->state = TASK_STATE_FINISHED;
 
     // Hopefully this never returns from this point
     coro_swap(&t->owner->sched_ctx, &t->ctx);
-}
-
-static bool is_coro(struct coro_task *in_question)
-{
-    struct coro_task *task;
-
-    list_for_each_entry(task, &g_active_loop->tasks, node) {
-        if (task == in_question) {
-            return true;
-        }
-    }
-
-    return false;
 }
 
 static void coro_swap(struct coro_ctx *in, struct coro_ctx *out)
@@ -777,6 +816,9 @@ static struct coro_task *task_new(size_t stack_size)
     task->waiter = NULL;
     task->name = NULL;
 
+    INIT_LIST_HEAD(&task->trigger_list);
+    task->pending = NULL;
+
     return task;
 error:
     task_free(task);
@@ -790,7 +832,8 @@ static void task_free(struct coro_task *task)
     }
 
     list_del(&task->node);
-    task_destroy_watcher(task);
+
+    task_remove_pending(task);
 
     if (task->stack) {
         munmap(task->stack, task->stack_size);
@@ -807,36 +850,12 @@ static void task_free(struct coro_task *task)
     }
 }
 
-static void task_destroy_watcher(struct coro_task *t)
+static void task_remove_pending(struct coro_task *task)
 {
-    struct ev_loop *loop;
-
-    assert(t != NULL);
-    assert(t->owner);
-
-    loop = t->owner->_loop;
-
-    switch (t->watcher_type) {
-    case CORO_NONE:
-        break;
-    case CORO_IO:
-        ev_io_stop(loop, &t->ev_watcher.io);
-        break;
-    case CORO_IDLE:
-        ev_idle_stop(loop, &t->ev_watcher.idle);
-        break;
-    case CORO_ASYNC:
-        ev_async_stop(loop, &t->ev_watcher.async);
-        break;
-    case CORO_TIMER:
-        ev_timer_stop(loop, &t->ev_watcher.timer);
-        break;
-    default:
-        assert(false);
+    if (task->pending) {
+        trigger_del_watcher(task->pending, task);
+        task->pending = NULL;
     }
-
-    t->watcher_type = CORO_NONE;
-    memset(&t->ev_watcher, 0, sizeof(t->ev_watcher));
 }
 
 static int allocate_stack(struct coro_task *t, size_t size)
@@ -849,48 +868,151 @@ static int allocate_stack(struct coro_task *t, size_t size)
     t->stack_size = size;
     t->stack_top =
             (uint8_t *)((
-                (uintptr_t)t->stack + t->stack_size) & ~0xf
+                            (uintptr_t)t->stack + t->stack_size) & ~0xf
                         );
     return 0;
 }
 
-static void task_prepare_async(struct coro_task *t)
+// Trigger Functions
+static struct coro_trigger *trigger_new(struct coro_loop *loop)
 {
-    t->watcher_type = CORO_ASYNC;
-    ev_async_init(&t->ev_watcher.async, t);
-    ev_async_start(t->owner->_loop, &t->ev_watcher.async);
+    struct coro_trigger *trigger = coro_zalloc(sizeof(struct coro_trigger));
+
+    assert(trigger); // Im not prepared to handle this yet
+
+    trigger->type = CORO_NONE;
+    trigger->ref_count = 1;
+    trigger->loop = loop;
+    INIT_LIST_HEAD(&trigger->tasks);
+
+    return trigger;
 }
 
-static void task_prepare_idle(struct coro_task *t)
+static struct coro_trigger *trigger_new_async(struct coro_loop *loop)
 {
-    t->watcher_type = CORO_IDLE;
-    ev_idle_init(&t->ev_watcher.idle, t);
-    ev_idle_start(t->owner->_loop, &t->ev_watcher.idle);
+    struct coro_trigger *trigger = trigger_new(loop);
+
+    if (!trigger) {
+        return NULL;
+    }
+
+    trigger->type = CORO_ASYNC;
+    ev_async_init(&trigger->async, &g_sentinal);
+    ev_async_start(trigger->loop->_loop, &trigger->async);
+    return trigger;
 }
 
-static void task_prepare_timer(struct coro_task *t, ev_tstamp time)
+static struct coro_trigger *trigger_new_idle(struct coro_loop *loop)
 {
-    t->watcher_type = CORO_TIMER;
-    ev_timer_init(&t->ev_watcher.timer, t, time, 0);
-    ev_timer_start(t->owner->_loop, &t->ev_watcher.timer);
+    struct coro_trigger *trigger = trigger_new(loop);
+
+    if (!trigger) {
+        return NULL;
+    }
+
+    trigger->type = CORO_IDLE;
+    ev_idle_init(&trigger->idle, &g_sentinal);
+    ev_idle_start(trigger->loop->_loop, &trigger->idle);
+    return trigger;
 }
 
-static void task_prepare_io(struct coro_task *t, int fd, int how)
+static struct coro_trigger *trigger_new_timer(struct coro_loop *loop, ev_tstamp time)
 {
+    struct coro_trigger *trigger = trigger_new(loop);
+
+    if (!trigger) {
+        return NULL;
+    }
+
+    trigger->type = CORO_TIMER;
+    ev_timer_init(&trigger->timer, &g_sentinal, time, 0);
+    ev_timer_start(trigger->loop->_loop, &trigger->timer);
+    return trigger;
+}
+
+static struct coro_trigger *trigger_new_io(struct coro_loop *loop, int fd, int how)
+{
+    struct coro_trigger *trigger;
     int events = 0;
-    if (CORO_FD_WAIT_READ & how) {
+    if (how & CORO_FD_WAIT_READ) {
         events |= EV_READ;
     }
 
-    if (CORO_FD_WAIT_WRITE & how) {
+    if (how & CORO_FD_WAIT_WRITE) {
         events |= EV_WRITE;
     }
 
     assert(events);
 
-    t->watcher_type = CORO_IO;
-    ev_io_init(&t->ev_watcher.io, t, fd, events);
-    ev_io_start(t->owner->_loop, &t->ev_watcher.io);
+    trigger = trigger_new(loop);
+
+    if (!trigger) {
+        return NULL;
+    }
+
+    trigger->type = CORO_IO;
+    ev_io_init(&trigger->io, &g_sentinal, fd, events);
+    ev_io_start(trigger->loop->_loop, &trigger->io);
+    return trigger;
+}
+
+static void trigger_add_watcher(struct coro_trigger *trigger, struct coro_task *task)
+{
+    list_add_tail(&task->trigger_list, &trigger->tasks);
+    trigger_inc_ref(trigger);
+}
+
+static void trigger_del_watcher(struct coro_trigger *trigger, struct coro_task *task)
+{
+    (void) trigger;
+    list_del_init(&task->trigger_list);
+    trigger_dec_ref(trigger);
+}
+
+static void trigger_inc_ref(struct coro_trigger *trigger)
+{
+    trigger->ref_count++;
+}
+
+static void trigger_dec_ref(struct coro_trigger *trigger)
+{
+    assert(trigger->ref_count);
+    trigger->ref_count--;
+
+    if (trigger->ref_count == 0) {
+        trigger_destroy(trigger);
+    }
+}
+
+static void trigger_destroy(struct coro_trigger *trigger)
+{
+    struct ev_loop *loop;
+
+    assert(trigger != NULL);
+    assert(trigger->loop);
+
+    loop = trigger->loop->_loop;
+
+    switch (trigger->type) {
+    case CORO_NONE:
+        break;
+    case CORO_IO:
+        ev_io_stop(loop, &trigger->io);
+        break;
+    case CORO_IDLE:
+        ev_idle_stop(loop, &trigger->idle);
+        break;
+    case CORO_ASYNC:
+        ev_async_stop(loop, &trigger->async);
+        break;
+    case CORO_TIMER:
+        ev_timer_stop(loop, &trigger->timer);
+        break;
+    default:
+        assert(false);
+    }
+
+    coro_free(trigger);
 }
 
 static struct coro_queue_data *queue_data_build(void *data, void (*free_f)(void *))
