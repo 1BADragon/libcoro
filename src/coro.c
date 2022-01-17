@@ -683,9 +683,7 @@ static int coro_event_trigger(struct coro_task *t, int revent)
     switch(coro_task_state(t)) {
     case TASK_STATE_INIT:
         // set the required values
-        t->ctx.sp = t->stack_top;
-        t->ctx.pc = &coro_start;
-        coro_ctx_set_arg1(&t->ctx, t);
+        coro_ctx_setup(&t->ctx, t->stack_top, &coro_start, t);
 
         // Set it to the new active coro
         t->owner->active = t;

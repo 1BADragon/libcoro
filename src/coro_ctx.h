@@ -20,7 +20,7 @@ struct coro_ctx;
  * coroutine, at the start of the routine. I will require the arch specific code to set
  * the first argument of a calling context.
  */
-void coro_ctx_set_arg1(struct coro_ctx *ctx, void *val);
+void coro_ctx_setup(struct coro_ctx *ctx, void *stack, void *entry, void *val);
 
 /**
  * @brief Swaps execution context between to and from, Current exectuion is stored in "to" and

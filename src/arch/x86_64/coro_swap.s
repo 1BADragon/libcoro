@@ -29,5 +29,5 @@ coro_swap_ctx:
    movq     8(%rsi), %rsp
    movq     0(%rsi), %rsi
 
-   jmp      *%rsi
+   ret
 

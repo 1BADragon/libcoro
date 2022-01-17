@@ -17,8 +17,10 @@ struct coro_ctx {
     void *rdi;
 };
 
-void coro_ctx_set_arg1(struct coro_ctx *ctx, void *val)
+void coro_ctx_setup(struct coro_ctx *ctx, void *stack, void *entry, void *val)
 {
+    ctx->sp = stack;
+    *(void **)ctx->sp = entry;
     ctx->rdi = val;
 }
 
