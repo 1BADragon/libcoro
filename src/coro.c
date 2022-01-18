@@ -113,7 +113,7 @@ static struct coro_trigger *trigger_new_io(struct coro_loop *loop, int fd, int h
 static void trigger_add_watcher(struct coro_trigger *trigger, struct coro_task *task);
 static void trigger_del_watcher(struct coro_trigger *trigger, struct coro_task *task);
 static void trigger_inc_ref(struct coro_trigger *trigger);
-static void trigger_dec_ref(struct coro_trigger *trigger);
+static void trigger_dec_ref(struct coro_trigger **trigger);
 static void trigger_destroy(struct coro_trigger *trigger);
 
 // Queue helpers
@@ -235,7 +235,7 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
     }
 
     trigger_add_watcher(trigger, task);
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
 
     return task;
 }
@@ -333,11 +333,19 @@ struct coro_queue *coro_queue_new(struct coro_loop *loop)
     }
 
     new_queue->parent = loop;
-    new_queue->sig = NULL;
+    new_queue->sig = trigger_new_async(loop);
+
+    if (!new_queue->sig) {
+        goto error;
+    }
 
     INIT_LIST_HEAD(&new_queue->data);
     list_add_tail(&new_queue->node, &loop->queues);
     return new_queue;
+
+error:
+    coro_queue_delete(new_queue);
+    return NULL;
 }
 
 void coro_queue_delete(struct coro_queue *queue)
@@ -346,13 +354,11 @@ void coro_queue_delete(struct coro_queue *queue)
     struct coro_queue_data *_safe_data;
 
     list_for_each_entry_safe(data, _safe_data, &queue->data, node) {
-        list_del(&data->node);
         queue_data_destroy(data);
     }
-
-    if (queue->sig) {
-        ev_feed_event(queue->parent->_loop, queue->sig, EV_CUSTOM);
-    }
+    
+    ev_feed_event(queue->parent->_loop, queue->sig, EV_CUSTOM);
+    trigger_dec_ref(&queue->sig);
 
     list_del(&queue->node);
 
@@ -383,10 +389,6 @@ void *coro_queue_pop(struct coro_queue *queue)
         return NULL;
     }
 
-    if (queue->sig) {
-        return NULL;
-    }
-
     for (;;) {
         ret = coro_queue_pop_nowait(queue);
         if (ret) {
@@ -399,7 +401,6 @@ void *coro_queue_pop(struct coro_queue *queue)
             // indicates the queue was closed..
             return NULL;
         }
-        queue->sig = NULL;
     }
 }
 
@@ -439,7 +440,7 @@ void coro_yeild()
     trigger = trigger_new_idle(g_active_loop);
 
     trigger_add_watcher(trigger, _curr_task);
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
 
     coro_swap_to_sched();
 }
@@ -456,7 +457,6 @@ void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_ho
     assert(_curr_task);
 
     trigger = trigger_new_async(g_active_loop);
-    trigger_add_watcher(trigger, _curr_task);
 
     do {
         int count = 0;
@@ -472,20 +472,18 @@ void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_ho
         }
 
         if (one_running) {
+            trigger_add_watcher(trigger, _curr_task);
             coro_swap_to_sched();
         }
 
     } while (one_running && CORO_TASK_WAIT_FIRST != how);
-
-    // Remove this to prevent strange things
-    trigger_del_watcher(trigger, _curr_task);
 
     // Set all waiters back to NULL
     for (size_t i = 0; i < len; ++i) {
         task[i]->waiter = NULL;
     }
 
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
 }
 
 void coro_sleep(unsigned long amnt)
@@ -494,7 +492,7 @@ void coro_sleep(unsigned long amnt)
 
     trigger = trigger_new_timer(g_active_loop, (ev_tstamp)amnt);
     trigger_add_watcher(trigger, coro_current_task());
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
     coro_swap_to_sched();
 }
 
@@ -505,7 +503,7 @@ void coro_sleepms(unsigned long amnt)
 
     trigger = trigger_new_timer(g_active_loop, t_amnt / (ev_tstamp)1000.);
     trigger_add_watcher(trigger, coro_current_task());
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
     coro_swap_to_sched();
 }
 
@@ -515,7 +513,7 @@ void coro_wait_fd(int fd, int how)
 
     trigger = trigger_new_io(g_active_loop, fd, how);
     trigger_add_watcher(trigger, coro_current_task());
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
     coro_swap_to_sched();
 }
 
@@ -709,8 +707,6 @@ void coro_ev_cb_invoke(void *watcher, int revents)
     if (_watcher->cb == &g_sentinal) {
         trigger = (struct coro_trigger *)watcher;
 
-        assert(!list_empty(&trigger->tasks));
-
         trigger_inc_ref(trigger);
 
         list_for_each_entry_safe(task, _safe, &trigger->tasks, trigger_list) {
@@ -718,7 +714,7 @@ void coro_ev_cb_invoke(void *watcher, int revents)
             coro_event_trigger(task, revents);
         }
 
-        trigger_dec_ref(trigger);
+        trigger_dec_ref(&trigger);
 
     } else {
         // so this is dumb
@@ -958,15 +954,18 @@ static struct coro_trigger *trigger_new_io(struct coro_loop *loop, int fd, int h
 
 static void trigger_add_watcher(struct coro_trigger *trigger, struct coro_task *task)
 {
+    assert(task->pending == NULL);
+    task->pending = trigger;
     list_add_tail(&task->trigger_list, &trigger->tasks);
     trigger_inc_ref(trigger);
 }
 
 static void trigger_del_watcher(struct coro_trigger *trigger, struct coro_task *task)
 {
-    (void) trigger;
+    assert(task->pending == trigger);
     list_del_init(&task->trigger_list);
-    trigger_dec_ref(trigger);
+    trigger_dec_ref(&trigger);
+    task->pending = NULL;
 }
 
 static void trigger_inc_ref(struct coro_trigger *trigger)
@@ -974,14 +973,16 @@ static void trigger_inc_ref(struct coro_trigger *trigger)
     trigger->ref_count++;
 }
 
-static void trigger_dec_ref(struct coro_trigger *trigger)
+static void trigger_dec_ref(struct coro_trigger **trigger)
 {
-    assert(trigger->ref_count);
-    trigger->ref_count--;
+    assert((*trigger)->ref_count);
+    (*trigger)->ref_count--;
 
-    if (trigger->ref_count == 0) {
-        trigger_destroy(trigger);
+    if ((*trigger)->ref_count == 0) {
+        trigger_destroy(*trigger);
     }
+
+    *trigger = NULL;
 }
 
 static void trigger_destroy(struct coro_trigger *trigger)

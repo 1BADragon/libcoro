@@ -6,7 +6,6 @@
 coro static void *reader(void *data)
 {
     struct coro_queue *queue = data;
-
     for (;;) {
         char *c = coro_queue_pop(queue);
         if (!c) {
