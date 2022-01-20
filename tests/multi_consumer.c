@@ -8,7 +8,6 @@ int vals[N_VALS] = {0};
 
 void *consumer_entry(void *arg)
 {
-    printf("%s started\n", coro_task_name(coro_current_task()));
     struct coro_queue *queue = arg;
 
     for (;;) {
@@ -19,6 +18,7 @@ void *consumer_entry(void *arg)
         }
 
         *at = 1;
+        coro_yeild();
     }
 
     return NULL;
@@ -26,7 +26,6 @@ void *consumer_entry(void *arg)
 
 void *producer_entry(void *arg)
 {
-    printf("%s started\n", coro_task_name(coro_current_task()));
     struct coro_queue *queue = arg;
 
     for (size_t i = 0; i < N_VALS; ++i) {
@@ -36,7 +35,7 @@ void *producer_entry(void *arg)
         coro_queue_push(queue, &(vals[i]), NULL);
     }
 
-    printf("%s finished", coro_task_name(coro_current_task()));
+    coro_queue_closewrite(queue);
 
     return NULL;
 }
@@ -67,7 +66,10 @@ int main() {
     coro_free_loop(loop);
 
     for (size_t i = 0; i < N_VALS; ++i) {
-        assert(vals[i]);
+        if (!vals[i]) {
+            printf("%zu vals not zero\n", i);
+            assert(vals[i]);
+        }
     }
     return 0;
 }

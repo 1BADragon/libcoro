@@ -201,6 +201,8 @@ void *coro_queue_pop(struct coro_queue *queue);
  */
 void *coro_queue_pop_nowait(struct coro_queue *queue);
 
+void coro_queue_closewrite(struct coro_queue *queue);
+
 // Wait from within the loop (as a coro)
 // Cleans the awaited task
 /**

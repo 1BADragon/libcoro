@@ -8,7 +8,7 @@ coro static void *reader(void *data)
     struct coro_queue *queue = data;
     for (;;) {
         char *c = coro_queue_pop(queue);
-        if (!(*c)) {
+        if (!c || !(*c)) {
             break;
         }
         putc(*c, stdout);
@@ -24,10 +24,12 @@ coro static void *writer(void *data)
 
     const char message[] = "This is a test message!!!\n";
 
-    for (size_t i = 0; i < sizeof(message); ++i) {
+    for (size_t i = 0; i < strlen(message); ++i) {
         coro_queue_push(queue, (void *)&message[i], NULL);
         coro_yeild();
     }
+
+    coro_queue_closewrite(queue);
 
     return NULL;
 }
