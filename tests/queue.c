@@ -6,10 +6,9 @@
 coro static void *reader(void *data)
 {
     struct coro_queue *queue = data;
-
     for (;;) {
         char *c = coro_queue_pop(queue);
-        if (!c) {
+        if (!c || !(*c)) {
             break;
         }
         putc(*c, stdout);
@@ -23,14 +22,14 @@ coro static void *writer(void *data)
 {
     struct coro_queue *queue = data;
 
-    const char *message = "This is a test message!!!\n";
+    const char message[] = "This is a test message!!!\n";
 
     for (size_t i = 0; i < strlen(message); ++i) {
         coro_queue_push(queue, (void *)&message[i], NULL);
-        coro_sleepms(10);
+        coro_yeild();
     }
 
-    coro_queue_delete(queue);
+    coro_queue_closewrite(queue);
 
     return NULL;
 }
@@ -47,6 +46,8 @@ int main()
     coro_run(loop);
     coro_task_join(rt);
     coro_task_join(wt);
+
+    coro_queue_delete(queue);
 
     coro_free_loop(loop);
 

@@ -201,6 +201,13 @@ void *coro_queue_pop(struct coro_queue *queue);
  */
 void *coro_queue_pop_nowait(struct coro_queue *queue);
 
+/**
+ * @brief Closes the write end of the queue signaling to consumers that the producer side has
+ * completed queueing data. Once any data on the queue has been consumed the queue pop functions
+ * will start return NULL.
+ */
+void coro_queue_closewrite(struct coro_queue *queue);
+
 // Wait from within the loop (as a coro)
 // Cleans the awaited task
 /**
