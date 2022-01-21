@@ -360,7 +360,7 @@ void coro_queue_delete(struct coro_queue *queue)
     list_for_each_entry_safe(data, _safe_data, &queue->data, node) {
         queue_data_destroy(data, true);
     }
-    
+
     ev_feed_event(queue->parent->_loop, queue->sig, EV_CUSTOM);
     trigger_dec_ref(&queue->sig);
 

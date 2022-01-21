@@ -4,7 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(coro LANGUAGES C ASM)
 
 option(BUILD_TESTS "Build testing code" ON)
-option(BUILD_SAMPLES "Build sample code" ON)
+option(BUILD_SAMPLES "Build sample code" OFF)
 option(MEM_SAN "Use memory sanitizer" OFF)
 option(UB_SAN "Use undefined behavior sanitizer" OFF)
 
