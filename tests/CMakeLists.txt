@@ -1,11 +1,12 @@
-macro(new_test TEST_NAME)
-    add_executable(${TEST_NAME} ${ARGN})
-    target_link_libraries(${TEST_NAME} coro)
+macro(new_test BASE_NAME)
+    add_executable(${BASE_NAME}_test ${ARGN})
+    target_link_libraries(${BASE_NAME}_test coro)
 
-    add_test(NAME test_${TEST_NAME} COMMAND ${TEST_NAME})
+    add_test(NAME test_${BASE_NAME}_test COMMAND ${BASE_NAME}_test)
 endmacro()
 
 new_test(basic_run basic_run.c)
 new_test(multi_run multi_run.c)
 new_test(queue queue.c)
+new_test(multi_producer multi_producer.c)
 new_test(multi_consumer multi_consumer.c)
