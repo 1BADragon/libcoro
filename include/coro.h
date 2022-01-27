@@ -81,14 +81,10 @@ enum coro_task_state {
  */
 #define CORO_FD_WAIT_WRITE  0x02
 
-#define CORO_WAIT_TIMER 0x04
-
-#define CORO_WAIT_ASYNC 0x08
-
-#define CORO_WAIT_IDLE 0x10
-
-
-// coroutine backends
+/**
+ * @macro CORO_BACKEND_EV
+ * @brief Used to indicate the libev backend is perfered.
+ */
 #define CORO_BACKEND_EV (0x01)
 
 /**

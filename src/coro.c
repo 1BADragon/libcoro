@@ -18,6 +18,13 @@
 #define THREAD_LOCAL
 #endif
 
+// Used when a timer event occurs. Not used in normal API usage
+#define CORO_WAIT_TIMER 0x04
+// Used when an async event occurs. Not used in normal API usage
+#define CORO_WAIT_ASYNC 0x08
+// Used when an IDLE event occurs. Not used in normal API usage
+#define CORO_WAIT_IDLE 0x10
+
 struct coro_loop {
     struct coro_backend *backend;
     struct coro_backend_type *backend_type;
