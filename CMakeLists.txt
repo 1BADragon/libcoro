@@ -7,6 +7,9 @@ option(BUILD_TESTS "Build testing code" ON)
 option(BUILD_SAMPLES "Build sample code" OFF)
 option(MEM_SAN "Use memory sanitizer" OFF)
 option(UB_SAN "Use undefined behavior sanitizer" OFF)
+option(COVERAGE "Use coverage tools" OFF)
+
+option(ENABLE_LIBEV_BACKEND "Compile in libev backend and link" ON)
 
 include(CheckSymbolExists)
 include(deps/configure_ev.cmake)
@@ -17,10 +20,10 @@ set(coro_srcs
 
     # some header only things
     src/coro_ctx.h src/macro.h src/list.h
+    src/backends/coro_backend.h
+    src/backends/coro_backend.c
 
-    # Custom config for libev
-    src/coro_ev.h src/coro_ev.c
-
+    # Custom context swap code for an arch
     src/arch/${CMAKE_SYSTEM_PROCESSOR}/coro_swap.s
     src/arch/${CMAKE_SYSTEM_PROCESSOR}/coro_arch.h
     )
@@ -35,7 +38,15 @@ target_include_directories(coro
         ${PROJECT_SOURCE_DIR}
         src/arch/${CMAKE_SYSTEM_PROCESSOR}
     )
-target_link_libraries(coro PUBLIC m)
+
+if (ENABLE_LIBEV_BACKEND)
+    target_sources(coro PRIVATE
+        # Custom config for libev
+        src/backends/coro_backend_ev.h
+        src/backends/coro_backend_ev.c)
+    target_link_libraries(coro PUBLIC ev m)
+    target_compile_definitions(coro PRIVATE CORO_LIBEV_BACKEND_ENABLED=1)
+endif()
 
 if (MEM_SAN)
     target_compile_options(coro PUBLIC -fsanitize=address)
@@ -45,6 +56,11 @@ endif()
 if (UB_SAN)
     target_compile_options(coro PUBLIC -fsanitize=undefined)
     target_link_options(coro PUBLIC -fsanitize=undefined)
+endif()
+
+if (COVERAGE)
+    target_compile_options(coro PUBLIC --coverage)
+    target_link_options(coro PUBLIC --coverage)
 endif()
 
 set_source_files_properties(src/coro_ev.c

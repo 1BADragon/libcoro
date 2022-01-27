@@ -3,9 +3,14 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <sys/socket.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // dumb macro to help dev's note coroutines. Does not need to be used.
 #define coro
@@ -75,6 +80,16 @@ enum coro_task_state {
  * @brief Used to inform coro_wait_fd to wait for a write event to occur on the provided fd.
  */
 #define CORO_FD_WAIT_WRITE  0x02
+
+#define CORO_WAIT_TIMER 0x04
+
+#define CORO_WAIT_ASYNC 0x08
+
+#define CORO_WAIT_IDLE 0x10
+
+
+// coroutine backends
+#define CORO_BACKEND_EV (0x01)
 
 /**
  * @brief Create a new coroutine loop. It is safe to create more than one coroutine loop as
@@ -240,12 +255,12 @@ void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_ho
  * @brief Sleep coroutine for amnt number of seconds. During this time the calling coroutine is
  * yielded.
  */
-void coro_sleep(unsigned long amnt);
+void coro_sleep(uintmax_t amnt);
 
 /**
  * @brief Same has coro_sleep except argument is in milliseconds.
  */
-void coro_sleepms(unsigned long amnt);
+void coro_sleepms(uintmax_t amnt);
 
 // Basic IO functions
 /**
@@ -291,5 +306,9 @@ void *coro_stackalloc(unsigned long size);
 
 void coro_hook_set_stackunalloc(void (*func)(void *, unsigned long));
 void coro_stackunalloc(void *ptr, unsigned long size);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif // CORO_H
