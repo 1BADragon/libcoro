@@ -11,7 +11,10 @@ void *timer_entry(void *arg)
 
     coro_sleep(2);
 
-    assert(time(NULL) - start_time >= 2);
+    time_t end_time = time(NULL);
+    assert(end_time - start_time >= 2);
+    assert(end_time - start_time < 3);
+
     return NULL;
 }
 
