@@ -32,6 +32,5 @@ target_compile_definitions(multi_consumer_producer_test PUBLIC
     -DN_CONSUM=100u
     -DN_VALS_P_PROD=10u)
 
-#new_test(multi_consumer multi_consumer.c)
-#new_test(queue_cleanup queue_cleanup.c)
-#new_test(timer timer.c)
+new_test(queue_cleanup queue_cleanup.c)
+new_test(timer timer.c)

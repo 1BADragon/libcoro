@@ -1,19 +1,24 @@
 #include <stdlib.h>
 #include <coro.h>
+#include <assert.h>
 
+#include "test_harness.h"
 
-int main() {
-    struct coro_loop *loop = coro_new_loop(0);
+void *main_task(void *arg) {
+    struct coro_queue *queue = coro_queue_new(NULL);
 
-    struct coro_queue *queue = coro_queue_new(loop);
+    assert(queue != NULL);
 
     for (size_t i = 0; i < 16; ++i) {
         int *v = malloc(sizeof(int));
+        assert(v != NULL);
 
-        coro_queue_push(queue, v, &free);
+        int rc = coro_queue_push(queue, v, &free);
+        assert(rc == 0);
     }
 
     coro_queue_delete(queue);
-    coro_free_loop(loop);
-    return 0;
+
+    *(int *)arg = 1;
+    return arg;
 }
