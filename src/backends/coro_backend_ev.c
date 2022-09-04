@@ -199,7 +199,7 @@ static void coro_libev_free_async(void *_async)
 {
     struct coro_ev_watcher *async = _async;
 
-    ev_async_start(async->backend->_loop, &async->watcher.async);
+    ev_async_stop(async->backend->_loop, &async->watcher.async);
     destroy_watcher(async);
 }
 
@@ -257,6 +257,7 @@ static void destroy_watcher(struct coro_ev_watcher *w)
 
 static void coro_ev_io_cb(struct ev_loop *loop, ev_io *watcher, int revents)
 {
+    (void)loop;
     struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
 
     assert(w->backend->_loop == loop);
@@ -267,6 +268,8 @@ static void coro_ev_io_cb(struct ev_loop *loop, ev_io *watcher, int revents)
 
 static void coro_ev_idle_cb(struct ev_loop *loop, ev_idle *watcher, int revents)
 {
+    (void)loop;
+    (void)revents;
     struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
 
     assert(w->backend->_loop == loop);
@@ -278,6 +281,8 @@ static void coro_ev_idle_cb(struct ev_loop *loop, ev_idle *watcher, int revents)
 
 static void coro_ev_async_cb(struct ev_loop *loop, ev_async *watcher, int revents)
 {
+    (void)loop;
+    (void)revents;
     struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
 
     assert(w->backend->_loop == loop);
@@ -289,6 +294,8 @@ static void coro_ev_async_cb(struct ev_loop *loop, ev_async *watcher, int revent
 
 static void coro_ev_timer_cb(struct ev_loop *loop, ev_timer *watcher, int revents)
 {
+    (void)loop;
+    (void)revents;
     struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
 
     assert(w->backend->_loop == loop);
@@ -300,6 +307,8 @@ static void coro_ev_timer_cb(struct ev_loop *loop, ev_timer *watcher, int revent
 
 static void coro_ev_prepare_cb(struct ev_loop *loop, ev_prepare *watcher, int revents)
 {
+    (void)loop;
+    (void)revents;
     struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
 
     assert(w->backend->_loop == loop);

@@ -10,22 +10,27 @@ void *task_entry(void *arg)
     return i;
 }
 
-int main()
+void *main_task(void *arg)
 {
-    int vals[N_TASKS];
-    struct coro_loop *loop = coro_new_loop(0);
+    int *i = arg;
+    struct coro_task *tasks[N_TASKS];
 
     for (size_t i = 0; i < N_TASKS; ++i) {
-        coro_create_task(loop, &task_entry, &(vals[i]));
+        int *t_arg = coro_zalloc(sizeof(int));
+        assert(t_arg);
+        tasks[i] = coro_create_task(NULL, task_entry, t_arg);
+        assert(tasks[i]);
     }
 
-    coro_run(loop);
+    coro_wait_tasks(tasks, N_TASKS, CORO_TASK_WAIT_ALL);
 
     for (size_t i = 0; i < N_TASKS; ++i) {
-        assert(vals[i]);
+        int *ret = coro_task_join(tasks[i]);
+
+        assert(*ret);
+        coro_free(ret);
     }
 
-    coro_free_loop(loop);
-
-    return 0;
+    *i = 1;
+    return i;
 }

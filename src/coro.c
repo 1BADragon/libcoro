@@ -98,7 +98,9 @@ static void coro_maintenance(struct coro_loop *loop);
 
 static int coro_event_trigger(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
+static void coro_swap_from_sched(struct coro_task *t);
 static void coro_start(struct coro_task *t);
+__attribute__((returns_twice))
 static void coro_swap(struct coro_ctx *in, struct coro_ctx *out);
 
 // Task functions
@@ -479,6 +481,7 @@ void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_ho
         for (size_t i = 0; i < len; ++i) {
             if (coro_task_running(task[i])) {
                 assert(_curr_task->owner == g_active_loop);
+                assert(task[i]->waiter == trigger || task[i]->waiter == NULL);
                 count++;
                 task[i]->waiter = trigger;
                 one_running = true;
@@ -729,17 +732,12 @@ static int coro_event_trigger(struct coro_task *t, int revent)
         // set the required values
         coro_ctx_setup(&t->ctx, t->stack_top, &coro_start, t);
 
-        // Set it to the new active coro
-        t->owner->active = t;
-
         // transfer execution to the coro
-        coro_swap(&t->ctx, &t->owner->sched_ctx);
+        coro_swap_from_sched(t);
         break;
     case TASK_STATE_RUNNING:
-        // Set as active
-        t->owner->active = t;
         // Resume execution in the coro
-        coro_swap(&t->ctx, &t->owner->sched_ctx);
+        coro_swap_from_sched(t);
         break;
     case TASK_STATE_FINISHED:
         // This might be a stale watcher, this also
@@ -747,20 +745,41 @@ static int coro_event_trigger(struct coro_task *t, int revent)
         break;
     }
 
-    // Remove active status
-    t->owner->active = NULL;
-
     return 0;
 }
 
 static void coro_swap_to_sched()
 {
+    // Can only be called from a coroutine
     assert(g_active_loop->active);
-    coro_swap(&g_active_loop->sched_ctx, &g_active_loop->active->ctx);
+
+    // store the active coroutine on stack
+    struct coro_task *t = g_active_loop->active;
+
+    // Set active to be the scheduler
+    g_active_loop->active = NULL;
+    coro_swap(&g_active_loop->sched_ctx, &t->ctx);
+
+    // restore the active back to the old active
+    g_active_loop->active = t;
+}
+
+static void coro_swap_from_sched(struct coro_task *t)
+{
+    // This should only be called by the scheduler (active == NULL)
+    assert(g_active_loop->active == NULL);
+    // Set t as the active coro
+    g_active_loop->active = t;
+    // Swap into the new coroutine
+    coro_swap(&t->ctx, &t->owner->sched_ctx);
+
+    // Upon return unset active coro as this code should only execut by the scheduler
+    g_active_loop->active = NULL;
 }
 
 static void coro_start(struct coro_task *t)
 {
+    g_active_loop->active = t;
     t->state = TASK_STATE_RUNNING;
 
     // call the coroutine entry
@@ -774,11 +793,13 @@ static void coro_start(struct coro_task *t)
     t->state = TASK_STATE_FINISHED;
 
     // Hopefully this never returns from this point
-    coro_swap(&t->owner->sched_ctx, &t->ctx);
+    coro_swap_to_sched();
+    assert(0);
 }
 
 static void coro_swap(struct coro_ctx *in, struct coro_ctx *out)
 {
+    // printf("Swap in %p out %p\n", in, out);
     coro_swap_ctx(in, out);
 }
 
@@ -963,9 +984,16 @@ static void triggered(struct coro_trigger *trigger, int revents)
     struct coro_task *task;
     struct coro_task *_safe;
 
+    // increment trigger to prevent it from being deleted while traversing the loop
     trigger_inc_ref(trigger);
 
-    list_for_each_entry_safe(task, _safe, &trigger->tasks, trigger_list) {
+    // Create a copy of the old list and clear the exsiting
+    struct list_head tmp_list = trigger->tasks;
+    list_cut_before(&tmp_list, &trigger->tasks, &trigger->tasks);
+
+    INIT_LIST_HEAD(&trigger->tasks);
+
+    list_for_each_entry_safe(task, _safe, &tmp_list, trigger_list) {
         trigger_del_watcher(trigger, task);
         coro_event_trigger(task, revents);
     }

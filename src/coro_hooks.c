@@ -57,7 +57,7 @@ void coro_free(void *ptr)
         return;
     }
 
-    coro_free_f(ptr);
+    coro_free_def(ptr);
 }
 
 void coro_hook_set_realloc(void *(*func)(void *, unsigned long))
