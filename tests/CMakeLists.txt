@@ -34,3 +34,4 @@ target_compile_definitions(multi_consumer_producer_test PUBLIC
 
 new_test(queue_cleanup queue_cleanup.c)
 new_test(timer timer.c)
+new_test(cleanup cleanup.c)

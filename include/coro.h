@@ -70,6 +70,27 @@ enum coro_task_state {
 };
 
 /**
+ * @brief The coro_cancelled_how enum indicates to the cleanup function how the task exited.
+ * Functions will be called in register order.
+ */
+enum coro_exit_how {
+    /// Passed when the coroutine exists via a return from the task entry point.
+    TASK_EXIT_NORMAL,
+    /// Passed when the coroutine exists either by call to coro_cancel_task or if the whole
+    /// parent loop is destroyed.
+    TASK_EXIT_CANCELLED
+};
+
+/**
+ * @typedef coro_cleanup_f
+ * @brief Prototype of a task cleanup function. Registered with coro_register_cleanup.
+ *
+ * @param how Indicates how the coroutine is exiting.
+ * @param args Arugment to the function.
+ */
+typedef void (*coro_cleanup_f)(enum coro_exit_how how, void *args);
+
+/**
  * @macro CORO_FD_WAIT_READ
  * @brief Used to inform coro_wait_fd to wait for a read event to occur on the provided fd.
  */
@@ -153,8 +174,19 @@ struct coro_loop *coro_task_parent(struct coro_task *task);
 enum coro_task_state coro_task_state(struct coro_task *task);
 
 /**
+ * @brief Registers a cleanup function to be called when the coroutine either exits
+ * or is cancled.
+ * @param task The task to register a cleanup function to, if NULL registers to the current
+ * running task.
+ * @param func Function to call at cleanup.
+ * @param arg Argument passed to the function, at cleanup.
+ * @return
+ */
+int coro_register_cleanup(struct coro_task *task, coro_cleanup_f func, void *arg);
+
+/**
  * @brief Set the name of a task.
- * @param task Task context to name.
+ * @param task Task context to name. If NULL, then current task is used.
  * @param name A pointer to a NULL-terminated C string. This data is coppied.
  * @return 0 on success otherwise errno is set.
  */
@@ -168,9 +200,11 @@ const char *coro_task_name(struct coro_task *task);
 // Task destroying functions
 /**
  * @brief Cancels and destroys a coroutine context. This should not be called from the active
- * task. Can be called from either within or outside of a coroutine loop.
+ * task. Can be called from either within or outside of a coroutine loop. Once called the task
+ * is no longer valid and should no longer be accessed.
  */
 int coro_cancel_task(struct coro_task *task);
+
 // Wait from outside the loop
 /**
  * @brief Collects the return result of a completed coroutine and frees the coroutine's data. Will

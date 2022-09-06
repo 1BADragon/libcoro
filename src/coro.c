@@ -51,6 +51,12 @@ struct coro_trigger {
     unsigned int ref_count;
 };
 
+struct coro_func_node {
+    struct list_head node;
+    coro_cleanup_f func;
+    void *arg;
+};
+
 struct coro_task {
     struct coro_loop *owner;
     struct list_head node;
@@ -72,6 +78,8 @@ struct coro_task {
     uint8_t *stack;
     uint8_t *stack_top;
     size_t stack_size;
+
+    struct list_head cleanup_list;
 
     char *name;
 };
@@ -108,6 +116,7 @@ static struct coro_task *task_new(size_t stack_size);
 static void task_free(struct coro_task *task);
 static void task_remove_pending(struct coro_task *task);
 static int allocate_stack(struct coro_task *t, size_t size);
+static void task_cleanup(struct coro_task *t, enum coro_exit_how how);
 
 // Trigger Functions
 static struct coro_trigger *trigger_new(struct coro_loop *loop);
@@ -174,6 +183,9 @@ void coro_free_loop(struct coro_loop *c)
     }
 
     list_for_each_entry_safe(curr_task, _safe_task, &c->tasks, node) {
+        if (TASK_STATE_RUNNING == curr_task->state) {
+            task_cleanup(curr_task, TASK_EXIT_CANCELLED);
+        }
         task_free(curr_task);
     }
 
@@ -265,8 +277,42 @@ enum coro_task_state coro_task_state(struct coro_task *task)
     return task->state;
 }
 
+int coro_register_cleanup(struct coro_task *task, coro_cleanup_f func, void *arg)
+{
+    struct coro_func_node *node = NULL;
+
+    if (NULL == task) {
+        task = coro_current_task();
+
+        if (NULL == task) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    node = coro_zalloc(sizeof(struct coro_func_node));
+    if (NULL == node) {
+        return -1;
+    }
+
+    node->func = func;
+    node->arg = arg;
+
+    list_add_tail(&node->node, &task->cleanup_list);
+    return 0;
+}
+
 int coro_task_set_name(struct coro_task *task, const char *name)
 {
+    if (NULL == task) {
+        task = coro_current_task();
+
+        if (NULL == task) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
     if (NULL == name) {
         if (task->name) {
             coro_free(task->name);
@@ -284,7 +330,7 @@ int coro_task_set_name(struct coro_task *task, const char *name)
     }
 
     task->name = ptr;
-    memcpy(task->name, name, len);
+    strncpy(task->name, name, len);
     task->name[len] = '\0';
     return 0;
 }
@@ -305,6 +351,8 @@ int coro_cancel_task(struct coro_task *task)
         errno = EINVAL;
         return -1;
     }
+
+    task_cleanup(task, TASK_EXIT_CANCELLED);
 
     task_free(task);
     return 0;
@@ -785,6 +833,8 @@ static void coro_start(struct coro_task *t)
     // call the coroutine entry
     t->ret = t->entry(t->arg);
 
+    task_cleanup(t, TASK_EXIT_NORMAL);
+
     // If another coroutine is waiting for this one to finish then signal it
     if (t->waiter) {
         t->owner->backend_type->trigger_async(t->waiter->private);
@@ -828,6 +878,8 @@ static struct coro_task *task_new(size_t stack_size)
     INIT_LIST_HEAD(&task->trigger_list);
     task->pending = NULL;
 
+    INIT_LIST_HEAD(&task->cleanup_list);
+
     return task;
 error:
     task_free(task);
@@ -839,6 +891,8 @@ static void task_free(struct coro_task *task)
     if (!task) {
         return;
     }
+
+    assert(list_empty(&task->cleanup_list));
 
     list_del(&task->node);
 
@@ -880,6 +934,19 @@ static int allocate_stack(struct coro_task *t, size_t size)
                             (uintptr_t)t->stack + t->stack_size) & ~0xf
                         );
     return 0;
+}
+
+static void task_cleanup(struct coro_task *t, enum coro_exit_how how)
+{
+    struct coro_func_node *at;
+    struct coro_func_node *_safe;
+
+    list_for_each_entry_safe(at, _safe, &t->cleanup_list, node) {
+        at->func(how, at->arg);
+
+        list_del(&at->node);
+        coro_free(at);
+    }
 }
 
 // Trigger Functions
