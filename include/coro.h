@@ -65,6 +65,9 @@ enum coro_task_state {
     TASK_STATE_INIT,
     /// A task has been started. This is the state of a task until it's entry point returns.
     TASK_STATE_RUNNING,
+    /// A task has been started and is currently yeilding a result. Will resume once result is
+    /// read
+    TASK_STATE_YEILDING,
     /// A task has been finished.
     TASK_STATE_FINISHED
 };
@@ -256,10 +259,25 @@ void coro_queue_closewrite(struct coro_queue *queue);
 // Wait from within the loop (as a coro)
 // Cleans the awaited task
 /**
- * @brief Waits for a task to complete and returns the return value from the coroutine. Can only
- * be called from within a running coroutine.
+ * @brief Waits for a task to complete and either returns or yeilds a value from the coroutine.
+ * Can only be called from within a running coroutine. Also cleans the task up if it has completed
+ * execution.
+ * @return Will return either a yeilded or returned value from a coroutine.
+ *
+ * @note If the coroutine can yeild more than one result then coro_await_val should be called.
  */
 void *coro_await(struct coro_task *task);
+
+/**
+ * @brief Wait for a task to yeild a value. Will block until either the coroutine yeilds a value,
+ * including the final return value, or the task is cancelled. Can only be called from within a
+ * running coroutine.
+ * @param task Task to get value from.
+ * @param val_p A pointer to store the value in.
+ * @return True if the coroutine has completed or False if the coroutine is paused while yeilding
+ * a result.
+ */
+bool coro_await_val(struct coro_task *task, void **val_p);
 
 // Coro yeilding and IO functions
 // Generic yeild, resumes after swapping to the scheduler
@@ -268,6 +286,13 @@ void *coro_await(struct coro_task *task);
  * run. This can be used when running long algorithms with little IO.
  */
 void coro_yeild();
+
+/**
+ * @brief Yeilds the coroutine back to the scheduler returning a value. Execution of the coroutine
+ * will resume once the value has been retreived.
+ * @param val Value being yeilded.
+ */
+void coro_yeild_val(void *val);
 
 // Does not clean the awaited tasks so user can determine what to do
 /**

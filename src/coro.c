@@ -67,8 +67,10 @@ struct coro_task {
     int last_revent;
 
     coro_task_entry_f entry;
+
+    // input/output values for the coro
     void *arg;
-    void *ret;
+    void *val;
 
     // Set by those who are waiting for this task
     struct coro_trigger *waiter;
@@ -113,6 +115,8 @@ static void coro_swap(struct coro_ctx *in, struct coro_ctx *out);
 
 // Task functions
 static struct coro_task *task_new(size_t stack_size);
+static int task_resume(struct coro_task *task);
+static void task_trigger_waiters(struct coro_task *task);
 static void task_free(struct coro_task *task);
 static void task_remove_pending(struct coro_task *task);
 static int allocate_stack(struct coro_task *t, size_t size);
@@ -231,7 +235,6 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
                                    coro_task_entry_f entry, void *arg)
 {
     struct coro_task *task;
-    struct coro_trigger *trigger = NULL;
 
     if (NULL == loop) {
         assert(g_active_loop);
@@ -250,21 +253,18 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
 
     list_add_tail(&task->node, &loop->tasks);
 
-    trigger = trigger_new_idle(loop);
-    if (!trigger) {
+    if (task_resume(task)) {
         task_free(task);
-        return NULL;
+        task = NULL;
     }
-
-    trigger_add_watcher(trigger, task);
-    trigger_dec_ref(&trigger);
 
     return task;
 }
 
 bool coro_task_running(struct coro_task *task)
 {
-    return coro_task_state(task) != TASK_STATE_FINISHED;
+    return coro_task_state(task) == TASK_STATE_INIT ||
+            coro_task_state(task) == TASK_STATE_RUNNING;
 }
 
 struct coro_loop *coro_task_parent(struct coro_task *task)
@@ -366,7 +366,7 @@ void *coro_task_join(struct coro_task *task)
         return NULL;
     }
 
-    ret = task->ret;
+    ret = task->val;
     task_free(task);
 
     return ret;
@@ -486,11 +486,29 @@ void coro_queue_closewrite(struct coro_queue *queue)
 
 void *coro_await(struct coro_task *task)
 {
-    void *ret;
+    void *val;
+    coro_await_val(task, &val);
 
+    return val;
+}
+
+bool coro_await_val(struct coro_task *task, void **val_p)
+{
+    bool ret = false;
     coro_wait_tasks(&task, 1, CORO_TASK_WAIT_ALL);
-    ret = task->ret;
-    task_free(task);
+    *val_p = task->val;
+
+    if (coro_task_state(task) == TASK_STATE_YEILDING) {
+        task->val = NULL;
+        task->state = TASK_STATE_RUNNING;
+        task_resume(task);
+    } else if (coro_task_state(task) == TASK_STATE_FINISHED) {
+        task_free(task);
+        ret = true;
+    } else {
+        assert(0);
+    }
+
     return ret;
 }
 
@@ -499,13 +517,30 @@ void coro_yeild()
     struct coro_task *_curr_task;
     struct coro_trigger *trigger;
 
-    _curr_task = g_active_loop->active;
+    _curr_task = coro_current_task();
+
+    assert(_curr_task != NULL);
 
     trigger = trigger_new_idle(g_active_loop);
 
     trigger_add_watcher(trigger, _curr_task);
     trigger_dec_ref(&trigger);
 
+    coro_swap_to_sched();
+}
+
+void coro_yeild_val(void *val)
+{
+    struct coro_task *_curr_task;
+
+    _curr_task = coro_current_task();
+
+    assert(_curr_task != NULL);
+
+    _curr_task->val = val;
+    _curr_task->state = TASK_STATE_YEILDING;
+
+    task_trigger_waiters(_curr_task);
     coro_swap_to_sched();
 }
 
@@ -536,7 +571,7 @@ void coro_wait_tasks(struct coro_task **task, size_t len, enum coro_task_wait_ho
             }
         }
 
-        if (one_running) {
+        if (one_running && CORO_TASK_WAIT_FIRST != how) {
             trigger_add_watcher(trigger, _curr_task);
             coro_swap_to_sched();
         }
@@ -787,6 +822,10 @@ static int coro_event_trigger(struct coro_task *t, int revent)
         // Resume execution in the coro
         coro_swap_from_sched(t);
         break;
+    case TASK_STATE_YEILDING:
+        // A yeilding task should not have a trigger associated with it
+        assert(0);
+        return -1;
     case TASK_STATE_FINISHED:
         // This might be a stale watcher, this also
         // might be an error state
@@ -831,14 +870,12 @@ static void coro_start(struct coro_task *t)
     t->state = TASK_STATE_RUNNING;
 
     // call the coroutine entry
-    t->ret = t->entry(t->arg);
+    t->val = t->entry(t->arg);
 
     task_cleanup(t, TASK_EXIT_NORMAL);
 
     // If another coroutine is waiting for this one to finish then signal it
-    if (t->waiter) {
-        t->owner->backend_type->trigger_async(t->waiter->private);
-    }
+    task_trigger_waiters(t);
 
     t->state = TASK_STATE_FINISHED;
 
@@ -884,6 +921,27 @@ static struct coro_task *task_new(size_t stack_size)
 error:
     task_free(task);
     return NULL;
+}
+
+static int task_resume(struct coro_task *task)
+{
+    struct coro_trigger *trigger = NULL;
+
+    trigger = trigger_new_idle(task->owner);
+    if (!trigger) {
+        return -1;
+    }
+
+    trigger_add_watcher(trigger, task);
+    trigger_dec_ref(&trigger);
+    return 0;
+}
+
+static void task_trigger_waiters(struct coro_task *task)
+{
+    if (task->waiter) {
+        task->owner->backend_type->trigger_async(task->waiter->private);
+    }
 }
 
 static void task_free(struct coro_task *task)

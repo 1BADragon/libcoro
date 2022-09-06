@@ -105,6 +105,7 @@ static struct coro_backend *coro_libev_new(int flags)
 
 static void coro_libev_free(struct coro_backend *backend)
 {
+    ev_prepare_stop(backend->_loop, &backend->maintenance.watcher.prepare);
     ev_loop_destroy(backend->_loop);
     coro_free(backend);
 }
