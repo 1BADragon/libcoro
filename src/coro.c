@@ -6,10 +6,10 @@
 #include <assert.h>
 #include <unistd.h>
 
+#include <list.h>
 #include <coro.h>
 #include <coro_ctx.h>
 #include <coro_arch.h>
-#include <list.h>
 #include <backends/coro_backend.h>
 
 #ifdef MULTI_THREAD

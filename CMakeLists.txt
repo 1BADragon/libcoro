@@ -4,10 +4,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(coro LANGUAGES C ASM)
 
 option(BUILD_TESTS "Build testing code" ON)
-option(BUILD_SAMPLES "Build sample code" OFF)
+option(BUILD_SAMPLES "Build sample code" ON)
 option(MEM_SAN "Use memory sanitizer" OFF)
 option(UB_SAN "Use undefined behavior sanitizer" OFF)
 option(COVERAGE "Use coverage tools" OFF)
+option(GCC_ANALYZE "Use GCC's static analyzer" OFF)
 
 option(ENABLE_LIBEV_BACKEND "Compile in libev backend and link" ON)
 
@@ -61,6 +62,10 @@ endif()
 if (COVERAGE)
     target_compile_options(coro PUBLIC --coverage)
     target_link_options(coro PUBLIC --coverage)
+endif()
+
+if (GCC_ANALYZE)
+    target_compile_options(coro PUBLIC -fanalyzer)
 endif()
 
 set_source_files_properties(src/coro_ev.c
