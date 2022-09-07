@@ -1,14 +1,16 @@
 # Coroutine Library
 
 My simple learning experience coroutine library. The coroutine frame is built on top of
-libev for event triggering. The coroutines are "true" coroutines that have their own
-exectuion stack. Currently, this is a very Linux only library. It might work with other
-Unix flavor'ed kernel's but has not been attempted. 
+libev for event triggering. The coroutines have their own exectuion stack. Currently, 
+this is a very Linux only library. It might work with other Unix flavor'ed kernel's but 
+has not been attempted. 
 
 ## Some Features:
  * Coroutines
  * Inter-coroutine data queue
  * Written in C
+ * Multi value yeilding (think python `yeild` expressions)
+ * IO Wrapper functions
 
 ## Example:
 

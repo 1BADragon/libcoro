@@ -27,6 +27,9 @@ set(coro_srcs
     # Custom context swap code for an arch
     src/arch/${CMAKE_SYSTEM_PROCESSOR}/coro_swap.s
     src/arch/${CMAKE_SYSTEM_PROCESSOR}/coro_arch.h
+
+    # Other things cmake knows to ignore
+    README.md
     )
 
 add_library(coro ${coro_srcs})
