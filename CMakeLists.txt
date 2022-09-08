@@ -9,6 +9,7 @@ option(MEM_SAN "Use memory sanitizer" OFF)
 option(UB_SAN "Use undefined behavior sanitizer" OFF)
 option(COVERAGE "Use coverage tools" OFF)
 option(GCC_ANALYZE "Use GCC's static analyzer" OFF)
+option(GNU_EXTENTIONS "Enable GNU C Extentions" ON)
 
 option(ENABLE_LIBEV_BACKEND "Compile in libev backend and link" ON)
 
@@ -32,6 +33,10 @@ set(coro_srcs
     README.md
     )
 
+if (GNU_EXTENTIONS)
+    list(APPEND coro_srcs src/coro_ext.c)
+endif()
+
 add_library(coro ${coro_srcs})
 target_compile_options(coro PRIVATE -Wall -Wextra)
 target_include_directories(coro
@@ -50,6 +55,11 @@ if (ENABLE_LIBEV_BACKEND)
         src/backends/coro_backend_ev.c)
     target_link_libraries(coro PUBLIC ev m)
     target_compile_definitions(coro PRIVATE CORO_LIBEV_BACKEND_ENABLED=1)
+endif()
+
+if (GNU_EXTENTIONS)
+    set_target_properties(coro PROPERTIES C_EXTENSIONS ON)
+    target_compile_definitions(coro PUBLIC -D_GNU_SOURCE=1)
 endif()
 
 if (MEM_SAN)

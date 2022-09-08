@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -16,12 +17,167 @@ struct client {
     struct list_head node;
     int client_sock;
     struct coro_task *task;
+    struct sockaddr_in addr;
+    struct list_head *client_list;
 };
 
-static void *server_entry(void *arg);
-static void *client_entry(void *arg);
+static void fd_close(enum coro_exit_how how, void *arg)
+{
+    (void)how;
+    close(*(int *)arg);
+}
 
-static LIST_HEAD(clients);
+static void *accepting_task(void *args)
+{
+    int new_client;
+    struct sockaddr_in new_addr = {0};
+    struct server_arg *servargs = args;
+    struct client *client;
+    socklen_t addr_len;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (-1 == sock) {
+        return NULL;
+    }
+
+    coro_register_cleanup(NULL, &fd_close, &sock);
+
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
+
+    new_addr.sin_family = AF_INET;
+    new_addr.sin_addr.s_addr = INADDR_ANY;
+    new_addr.sin_port = htons(servargs->port);
+
+    if (bind(sock, (struct sockaddr *)&new_addr, sizeof(struct sockaddr_in))) {
+        return NULL;
+    }
+
+    if (listen(sock, 10)) {
+        return NULL;
+    }
+
+    for (;;) {
+        addr_len = sizeof(new_addr);
+        new_client = coro_accept(sock, (struct sockaddr *)&new_addr, &addr_len);
+
+        if (-1 == new_client) {
+            break;
+        }
+
+        client = malloc(sizeof(struct client));
+        if (NULL == client) {
+            close(new_client);
+            break;
+        }
+
+        client->client_sock = new_client;
+        client->addr = new_addr;
+        client->task = NULL;
+
+        coro_yeild_val(client);
+    }
+
+    return NULL;
+}
+
+static void clean_client(enum coro_exit_how how, void *raw_client)
+{
+    (void)how;
+    struct client *c = raw_client;
+    char ip_buf[24];
+
+    inet_ntop(AF_INET, &c->addr.sin_addr, ip_buf, 24);
+
+    coro_printf("Connection to client at %s:%hu closed\n", ip_buf, ntohs(c->addr.sin_port));
+
+    close(c->client_sock);
+    list_del(&c->node);
+    free(c);
+}
+
+static void *client_task(void *raw_client)
+{
+    struct client *at;
+    struct client *c = raw_client;
+    uint8_t buf[64];
+    char ip_buf[24];
+
+    inet_ntop(AF_INET, &c->addr.sin_addr, ip_buf, 24);
+
+    coro_printf("New connection from %s:%hu\n", ip_buf, ntohs(c->addr.sin_port));
+
+    coro_register_cleanup(NULL, clean_client, c);
+    for (;;) {
+        ssize_t rc = coro_recv(c->client_sock, buf, 64, 0);
+
+        if (rc <= 0) {
+            break;
+        }
+
+        list_for_each_entry(at, c->client_list, node) {
+            ssize_t total_sent = 0;
+
+            while (total_sent < rc) {
+                ssize_t send_rc = coro_send(at->client_sock, buf + total_sent, 64 - total_sent, 0);
+
+                if (send_rc <= 0) {
+                    return NULL;
+                }
+
+                total_sent += send_rc;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static void clean_client_list(enum coro_exit_how how, void *list_raw)
+{
+    (void)how;
+    struct list_head *list = list_raw;
+    struct client *at;
+    struct client *_safe;
+
+    list_for_each_entry_safe(at, _safe, list, node) {
+        close(at->client_sock);
+        list_del(&at->node);
+        free(at);
+    }
+}
+
+static void *server_start(void *args)
+{
+    void *raw_val;
+    struct coro_task *new_conn_task = NULL;
+
+    struct list_head *client_list = NULL;
+
+    client_list = malloc(sizeof(struct list_head));
+    INIT_LIST_HEAD(client_list);
+
+    coro_register_cleanup(NULL, clean_client_list, client_list);
+    new_conn_task = coro_create_task(NULL, &accepting_task, args);
+    if (NULL == new_conn_task) {
+        return NULL;
+    }
+
+    while (!coro_await_val(new_conn_task, &raw_val)) {
+        struct client *client = raw_val;
+
+        client->task = coro_create_task(NULL, &client_task, client);
+        if (NULL == client->task) {
+            close(client->client_sock);
+            free(client);
+            continue;
+        }
+
+        client->client_list = client_list;
+        list_add_tail(&client->node, client_list);
+    }
+
+    return NULL;
+}
 
 int main(int argc, char **argv)
 {
@@ -38,7 +194,7 @@ int main(int argc, char **argv)
     struct coro_loop *loop = coro_new_loop(0);
 
     arg.port = port;
-    struct coro_task *server_task = coro_create_task(loop, server_entry, &arg);
+    struct coro_task *server_task = coro_create_task(loop, server_start, &arg);
 
     coro_run(loop);
     coro_task_join(server_task);
@@ -46,95 +202,4 @@ int main(int argc, char **argv)
     coro_free_loop(loop);
 
     return 0;
-}
-
-static void *server_entry(void *_arg)
-{
-    struct sockaddr_in addr = {0};
-    struct server_arg *arg = _arg;
-    socklen_t len = sizeof(struct sockaddr_in);
-
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(arg->port);
-    addr.sin_family = AF_INET;
-
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (-1 == sock) {
-        perror("Failed to create socket");
-        goto exit;
-    }
-
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(struct sockaddr_in))) {
-        perror("Bind failed");
-        goto exit;
-    }
-
-    if (listen(sock, 10)) {
-        perror("Listen failed");
-        goto exit;
-    }
-
-    for (;;) {
-        int client = coro_accept(sock, (struct sockaddr *)&addr, &len);
-
-        if (client == -1) {
-            goto exit;
-        }
-
-        printf("New client: %s:%hu\n", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
-
-        struct client *arg = malloc(sizeof(struct client));
-        if (NULL == arg) {
-            perror("Failed to allocate client argument");
-            close(client);
-            goto exit;
-        }
-
-        arg->client_sock = client;
-        arg->task = coro_create_task(NULL, client_entry, arg);
-
-        if (arg->task == NULL) {
-            close(arg->client_sock);
-            free(arg);
-        }
-
-        list_add_tail(&arg->node, &clients);
-    }
-
-exit:
-    close(sock);
-    return NULL;
-}
-
-static void *client_entry(void *_arg)
-{
-    uint8_t buf[128];
-    struct client *self = _arg;
-    struct client *curr;
-
-    for(;;) {
-        long rc = coro_recv(self->client_sock, buf, 128, 0);
-
-        if (rc <= 0) {
-            break;
-        }
-
-        list_for_each_entry(curr, &clients, node) {
-            long sent = 0;
-            while (sent < rc) {
-                long this_send = coro_send(curr->client_sock, buf + sent, rc - sent, 0);
-
-                if (this_send <= 0) {
-                    goto exit;
-                }
-
-                sent += this_send;
-            }
-        }
-    }
-
-
-exit:
-    close(self->client_sock);
-    return NULL;
 }

@@ -362,6 +362,46 @@ void *coro_stackalloc(unsigned long size);
 void coro_hook_set_stackunalloc(void (*func)(void *, unsigned long));
 void coro_stackunalloc(void *ptr, unsigned long size);
 
+#ifdef _GNU_SOURCE
+
+// libcoro compatable standard io handles.
+extern FILE *coro_stdin;
+extern FILE *coro_stdout;
+extern FILE *coro_stderr;
+
+/**
+ * @brief Opens a FILE* with libcoro compatable backend. Behaves like libc's fopen with the added
+ * benifit of yeidling if blocking occurs. Once opened typical libc functions, (fwrite, fprintf) can
+ * be used like normal. Requires GNU extentions to work nicely.
+ * @param path Path to open.
+ * @param mode The open mode, same as fopen
+ *
+ * @return A valid FILE pointer on success, otherwise NULL with errno set.
+ */
+FILE *coro_fopen(const char *path, const char *mode);
+
+/**
+ * @brief Opens a FILE* with libcoro compatable backend. Behaves like libc's fdopen with the added
+ * benifit of yeilding if blocking occurs. Like libc's fdopen, the file descriptor is closed with
+ * fclose. Once opened typical libc functions, (fwrite, fprintf) can be used like normal.
+ * Requires GNU extentions to work nicely.
+ * @param fd File descriptor to convert into a FILE pointer.
+ * @param mode The open to open in.
+ *
+ * @return A valid FILE pointer on success, otherwise NULL with errno set.
+ */
+FILE *coro_fdopen(int fd, const char *mode);
+
+/**
+ * @brief A printf wrapper for libcoro. Can yeild if blocking occurs.
+ * @param fmt printf format string.
+ *
+ * @return Same as printf.
+ */
+ssize_t coro_printf(const char *fmt, ...);
+
+#endif
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

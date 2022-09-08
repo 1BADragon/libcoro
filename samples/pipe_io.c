@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -45,7 +44,7 @@ int main()
 {
     int fd[2];
 
-    pipe2(fd, O_NONBLOCK);
+    pipe(fd);
 
     struct coro_loop *loop = coro_new_loop(0);
 
