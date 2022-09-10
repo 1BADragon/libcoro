@@ -19,11 +19,13 @@
 #endif
 
 // Used when a timer event occurs. Not used in normal API usage
-#define CORO_WAIT_TIMER 0x04
+#define CORO_WAIT_TIMER (1 << 2)
 // Used when an async event occurs. Not used in normal API usage
-#define CORO_WAIT_ASYNC 0x08
+#define CORO_WAIT_ASYNC (1 << 3)
 // Used when an IDLE event occurs. Not used in normal API usage
-#define CORO_WAIT_IDLE 0x10
+#define CORO_WAIT_IDLE (1 << 4)
+// Used when a CUSTOM event watcher indicates its ready.
+#define CORO_WAIT_CUSTOM (1 << 5)
 
 struct coro_loop {
     struct coro_backend *backend;
@@ -33,6 +35,8 @@ struct coro_loop {
     struct coro_task *active;
     struct list_head tasks;
     struct list_head queues;
+
+    struct list_head customs;
 };
 
 enum coro_watcher_type {
@@ -102,9 +106,20 @@ struct coro_queue {
     bool write_closed;
 };
 
+struct coro_custom {
+    struct list_head node;
+    struct coro_task *task;
+
+    coro_wait_custom_f poll;
+    void *cb_data;
+};
+
 THREAD_LOCAL static struct coro_loop *g_active_loop;
 
 static void coro_maintenance(struct coro_loop *loop);
+
+static void check_custom_watchers(struct coro_loop *loop);
+static bool coro_should_exit(struct coro_loop *loop);
 
 static int coro_event_trigger(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
@@ -167,6 +182,7 @@ struct coro_loop *coro_new_loop(int flags)
     c->active = NULL;
     INIT_LIST_HEAD(&c->tasks);
     INIT_LIST_HEAD(&c->queues);
+    INIT_LIST_HEAD(&c->customs);
 
     return c;
 
@@ -596,8 +612,31 @@ void coro_sleepms(uintmax_t amnt)
     struct coro_trigger *trigger;
 
     trigger = trigger_new_timer(g_active_loop, amnt);
+    assert(trigger);
     trigger_add_watcher(trigger, coro_current_task());
     trigger_dec_ref(&trigger);
+    coro_swap_to_sched();
+}
+
+void coro_wait_custom(coro_wait_custom_f poll, void *cb_data)
+{
+    struct coro_custom *custom;
+    struct coro_loop *loop;
+    struct coro_task *this;
+
+    loop = coro_current();
+    assert(loop);
+
+    this = coro_current_task();
+    assert(this);
+
+    custom = coro_zalloc(sizeof(struct coro_custom));
+    assert(custom);
+    custom->task = this;
+    custom->poll = poll;
+    custom->cb_data = cb_data;
+
+    list_add_tail(&custom->node, &loop->customs);
     coro_swap_to_sched();
 }
 
@@ -791,18 +830,50 @@ long coro_sendmsg(int sock, const struct msghdr *msg, int flags)
 
 static void coro_maintenance(struct coro_loop *loop)
 {
+    check_custom_watchers(loop);
+
+    if (coro_should_exit(loop)) {
+        loop->backend_type->backend_stop(loop->backend);
+    }
+}
+
+static void check_custom_watchers(struct coro_loop *loop)
+{
+    struct coro_custom *at;
+    struct coro_custom *safe;
+
+    struct list_head copy;
+    INIT_LIST_HEAD(&copy);
+
+    list_cut_before(&copy, &loop->customs, &loop->customs);
+
+    list_for_each_entry_safe(at, safe, &copy, node) {
+        // either way this will be removed from this list
+        list_del(&at->node);
+
+        if (!at->poll(at->cb_data)) {
+            // The task is ready
+            coro_event_trigger(at->task, CORO_WAIT_CUSTOM);
+            free(at);
+        } else {
+            // The task is not ready place it on the real list
+            list_add_tail(&at->node, &loop->customs);
+        }
+    }
+}
+
+static bool coro_should_exit(struct coro_loop *loop)
+{
     struct coro_task *task;
     bool tasks_running = false;
 
-    list_for_each_entry(task, &g_active_loop->tasks, node) {
+    list_for_each_entry(task, &loop->tasks, node) {
         if (coro_task_running(task)) {
             tasks_running = true;
         }
     }
 
-    if (!tasks_running) {
-        loop->backend_type->backend_stop(loop->backend);
-    }
+    return !tasks_running;
 }
 
 static int coro_event_trigger(struct coro_task *t, int revent)

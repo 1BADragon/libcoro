@@ -47,6 +47,16 @@ struct coro_queue;
 typedef void *(*coro_task_entry_f)(void *arg);
 
 /**
+ * @typedef coro_wait_custom_f
+ * @brief Function prototype describing the signature of a custom wait routine allowing a coroutine
+ * to block until some custom condition is met.
+ *
+ * @param cb_data Custom data passed to the routine, defined by the blocking coroutine.
+ * @return 0 if the wait condition as been met, a non-zero value otherwise.
+ */
+typedef int (*coro_wait_custom_f)(void *cb_data);
+
+/**
  * @brief The coro_task_wait_how enum is used with coro_wait_task to indicate how to
  * wait for tasks to complete.
  */
@@ -316,6 +326,13 @@ void coro_sleep(uintmax_t amnt);
  * @brief Same has coro_sleep except argument is in milliseconds.
  */
 void coro_sleepms(uintmax_t amnt);
+
+/**
+ * @brief Blocks the coroutine until the poll routine indicates the wait condition has been met.
+ * @param poll Poll routine to use for checking the resume condition.
+ * @param cb_data Custom data passed to the poll routine.
+ */
+void coro_wait_custom(coro_wait_custom_f poll, void *cb_data);
 
 // Basic IO functions
 /**
