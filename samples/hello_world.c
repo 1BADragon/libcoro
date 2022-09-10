@@ -5,8 +5,7 @@ coro static void *hello_world(void *arg)
 {
     (void) arg;
 
-    coro_yeild();
-    printf("Hello, World!\n");
+    coro_printf("Hello, World!\n");
 
     return NULL;
 }

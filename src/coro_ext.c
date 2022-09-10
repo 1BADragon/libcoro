@@ -79,6 +79,8 @@ ssize_t coro_printf(const char *fmt, ...)
     ssize_t ret = vfprintf(coro_stdout, fmt, args);
     va_end(args);
 
+    fflush(coro_stdout);
+
     return ret;
 }
 
@@ -111,14 +113,14 @@ static ssize_t _int_coro_read(void *cookie, char *buf, size_t size)
 {
     struct _int_coro_io_ctx *ctx = cookie;
 
-    return coro_read(ctx->fd, buf, size);
+    return ((coro_current()) ? coro_read : read)(ctx->fd, buf, size);
 }
 
 static ssize_t _int_coro_write(void *cookie, const char *buf, size_t size)
 {
     struct _int_coro_io_ctx *ctx = cookie;
 
-    return coro_write(ctx->fd, buf, size);
+    return ((coro_current()) ? coro_write : write)(ctx->fd, buf, size);
 }
 
 static int _int_coro_seek(void *cookie, off64_t *offset, int whence)
