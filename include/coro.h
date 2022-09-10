@@ -364,7 +364,7 @@ void coro_stackunalloc(void *ptr, unsigned long size);
 
 #ifdef _GNU_SOURCE
 
-// libcoro compatable standard io handles.
+// libcoro compatable standard io handles. Safe to use outside of a coroutine.
 extern FILE *coro_stdin;
 extern FILE *coro_stdout;
 extern FILE *coro_stderr;
