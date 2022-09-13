@@ -10,6 +10,8 @@ option(UB_SAN "Use undefined behavior sanitizer" OFF)
 option(COVERAGE "Use coverage tools" OFF)
 option(GCC_ANALYZE "Use GCC's static analyzer" OFF)
 option(GNU_EXTENTIONS "Enable GNU C Extentions" ON)
+option(THREAD_SUPPORT "Build with threading support" OFF)
+option(THREAD_SAN "Build with thread sanitizer" OFF)
 
 option(ENABLE_LIBEV_BACKEND "Compile in libev backend and link" ON)
 
@@ -18,10 +20,16 @@ include(deps/configure_ev.cmake)
 
 set(coro_srcs
     # main module functions
+    src/coro_types.h
     include/coro.h src/coro.c src/coro_hooks.c
+
+    # threading support
+    src/coro_thread.h src/coro_thread_pthread.c
 
     # some header only things
     src/coro_ctx.h src/macro.h src/list.h
+
+    # backend api
     src/backends/coro_backend.h
     src/backends/coro_backend.c
 
@@ -72,6 +80,11 @@ if (UB_SAN)
     target_link_options(coro PUBLIC -fsanitize=undefined)
 endif()
 
+if (THREAD_SAN)
+    target_compile_options(coro PUBLIC -fsanitize=thread)
+    target_link_options(coro PUBLIC -fsanitize=thread)
+endif()
+
 if (COVERAGE)
     target_compile_options(coro PUBLIC --coverage)
     target_link_options(coro PUBLIC --coverage)
@@ -79,6 +92,12 @@ endif()
 
 if (GCC_ANALYZE)
     target_compile_options(coro PUBLIC -fanalyzer)
+endif()
+
+if (THREAD_SUPPORT)
+    target_compile_definitions(coro PUBLIC -DMULTI_THREAD=1)
+    target_compile_options(coro PRIVATE -pthread)
+    target_link_libraries(coro PUBLIC pthread)
 endif()
 
 set_source_files_properties(src/coro_ev.c

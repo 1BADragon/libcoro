@@ -16,6 +16,24 @@ extern "C" {
 #define coro
 
 /**
+ * @macro CORO_FD_WAIT_READ
+ * @brief Used to inform coro_wait_fd to wait for a read event to occur on the provided fd.
+ */
+#define CORO_FD_WAIT_READ   0x01
+
+/**
+ * @macro CORO_FD_WAIT_WRITE
+ * @brief Used to inform coro_wait_fd to wait for a write event to occur on the provided fd.
+ */
+#define CORO_FD_WAIT_WRITE  0x02
+
+/**
+ * @macro CORO_BACKEND_EV
+ * @brief Used to indicate the libev backend is perfered.
+ */
+#define CORO_BACKEND_EV (0x01)
+
+/**
  * @struct coro_loop
  * @brief Coroutine loop context. Top level container for coroutines. A coro_loop contains
  * coroutine and queue contexts. Created with coro_new_loop.
@@ -36,25 +54,6 @@ struct coro_task;
  * is only safe to pass data between coroutines of the same loop.
  */
 struct coro_queue;
-
-/**
- * @typedef coro_task_entry_f
- * @brief Function prototype describing the signature of an entrypoint for a coroutine.
- *
- * @param arg Input argument into the coroutine. Value passed directly through.
- * @return The final return value from the coroutine.
- */
-typedef void *(*coro_task_entry_f)(void *arg);
-
-/**
- * @typedef coro_wait_custom_f
- * @brief Function prototype describing the signature of a custom wait routine allowing a coroutine
- * to block until some custom condition is met.
- *
- * @param cb_data Custom data passed to the routine, defined by the blocking coroutine.
- * @return 0 if the wait condition as been met, a non-zero value otherwise.
- */
-typedef int (*coro_wait_custom_f)(void *cb_data);
 
 /**
  * @brief The coro_task_wait_how enum is used with coro_wait_task to indicate how to
@@ -95,6 +94,25 @@ enum coro_exit_how {
 };
 
 /**
+ * @typedef coro_task_entry_f
+ * @brief Function prototype describing the signature of an entrypoint for a coroutine.
+ *
+ * @param arg Input argument into the coroutine. Value passed directly through.
+ * @return The final return value from the coroutine.
+ */
+typedef void *(*coro_task_entry_f)(void *arg);
+
+/**
+ * @typedef coro_wait_custom_f
+ * @brief Function prototype describing the signature of a custom wait routine allowing a coroutine
+ * to block until some custom condition is met.
+ *
+ * @param cb_data Custom data passed to the routine, defined by the blocking coroutine.
+ * @return 0 if the wait condition as been met, a non-zero value otherwise.
+ */
+typedef int (*coro_wait_custom_f)(void *cb_data);
+
+/**
  * @typedef coro_cleanup_f
  * @brief Prototype of a task cleanup function. Registered with coro_register_cleanup.
  *
@@ -102,24 +120,6 @@ enum coro_exit_how {
  * @param args Arugment to the function.
  */
 typedef void (*coro_cleanup_f)(enum coro_exit_how how, void *args);
-
-/**
- * @macro CORO_FD_WAIT_READ
- * @brief Used to inform coro_wait_fd to wait for a read event to occur on the provided fd.
- */
-#define CORO_FD_WAIT_READ   0x01
-
-/**
- * @macro CORO_FD_WAIT_WRITE
- * @brief Used to inform coro_wait_fd to wait for a write event to occur on the provided fd.
- */
-#define CORO_FD_WAIT_WRITE  0x02
-
-/**
- * @macro CORO_BACKEND_EV
- * @brief Used to indicate the libev backend is perfered.
- */
-#define CORO_BACKEND_EV (0x01)
 
 /**
  * @brief Create a new coroutine loop. It is safe to create more than one coroutine loop as
@@ -239,7 +239,7 @@ void coro_queue_delete(struct coro_queue *queue);
 
 /**
  * @brief Push new data to the coro queue. An optional free function can be provided to
- * clean any pending data when the queue is destoryed.
+ * clean any pending data when the queue is destoryed. The queue is not thread-safe.
  */
 int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *));
 

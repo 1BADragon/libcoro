@@ -9,112 +9,12 @@
 #include <list.h>
 #include <coro.h>
 #include <coro_ctx.h>
+#include <coro_types.h>
 #include <coro_arch.h>
+#include <coro_thread.h>
 #include <backends/coro_backend.h>
 
-#ifdef MULTI_THREAD
-#define THREAD_LOCAL __thread
-#else
-#define THREAD_LOCAL
-#endif
-
-// Used when a timer event occurs. Not used in normal API usage
-#define CORO_WAIT_TIMER (1 << 2)
-// Used when an async event occurs. Not used in normal API usage
-#define CORO_WAIT_ASYNC (1 << 3)
-// Used when an IDLE event occurs. Not used in normal API usage
-#define CORO_WAIT_IDLE (1 << 4)
-// Used when a CUSTOM event watcher indicates its ready.
-#define CORO_WAIT_CUSTOM (1 << 5)
-
-struct coro_loop {
-    struct coro_backend *backend;
-    struct coro_backend_type *backend_type;
-
-    struct coro_ctx sched_ctx;
-    struct coro_task *active;
-    struct list_head tasks;
-    struct list_head queues;
-
-    struct list_head customs;
-};
-
-enum coro_watcher_type {
-    CORO_NONE,
-    CORO_IO,
-    CORO_IDLE,
-    CORO_ASYNC,
-    CORO_TIMER,
-};
-
-struct coro_trigger {
-    void *private;
-    enum coro_watcher_type type;
-    struct list_head tasks;
-    struct coro_loop *loop;
-    unsigned int ref_count;
-};
-
-struct coro_func_node {
-    struct list_head node;
-    coro_cleanup_f func;
-    void *arg;
-};
-
-struct coro_task {
-    struct coro_loop *owner;
-    struct list_head node;
-
-    struct list_head trigger_list;
-    struct coro_trigger *pending;
-
-    int last_revent;
-
-    coro_task_entry_f entry;
-
-    // input/output values for the coro
-    void *arg;
-    void *val;
-
-    // Set by those who are waiting for this task
-    struct coro_trigger *waiter;
-
-    struct coro_ctx ctx;
-    enum coro_task_state state;
-    uint8_t *stack;
-    uint8_t *stack_top;
-    size_t stack_size;
-
-    struct list_head cleanup_list;
-
-    char *name;
-};
-
-struct coro_queue_data {
-    struct list_head node;
-    void *data;
-    void (*free_f)(void *);
-};
-
-struct coro_queue {
-    struct coro_loop *parent;
-    struct list_head node;
-
-    struct list_head data;
-    struct coro_trigger *sig;
-
-    bool write_closed;
-};
-
-struct coro_custom {
-    struct list_head node;
-    struct coro_task *task;
-
-    coro_wait_custom_f poll;
-    void *cb_data;
-};
-
-THREAD_LOCAL static struct coro_loop *g_active_loop;
+static THREAD_LOCAL struct coro_loop *g_active_loop;
 
 static void coro_maintenance(struct coro_loop *loop);
 
@@ -184,6 +84,14 @@ struct coro_loop *coro_new_loop(int flags)
     INIT_LIST_HEAD(&c->queues);
     INIT_LIST_HEAD(&c->customs);
 
+    c->running = false;
+
+    if (mtx_init(&c->lock)) {
+        goto error;
+    }
+
+    c->lock_init = true;
+
     return c;
 
 error:
@@ -202,6 +110,8 @@ void coro_free_loop(struct coro_loop *c)
         return;
     }
 
+    mtx_lock(&c->lock);
+
     list_for_each_entry_safe(curr_task, _safe_task, &c->tasks, node) {
         if (TASK_STATE_RUNNING == curr_task->state) {
             task_cleanup(curr_task, TASK_EXIT_CANCELLED);
@@ -209,12 +119,18 @@ void coro_free_loop(struct coro_loop *c)
         task_free(curr_task);
     }
 
+    mtx_unlock(&c->lock);
+
     list_for_each_entry_safe(curr_queue, _safe_queue, &c->queues, node) {
         coro_queue_delete(curr_queue);
     }
 
     if (c->backend) {
         c->backend_type->backend_free(c->backend);
+    }
+
+    if (c->lock_init) {
+        mtx_deinit(&c->lock);
     }
 
     coro_free(c);
@@ -226,8 +142,15 @@ int coro_run(struct coro_loop *l)
         return -1;
     }
 
+    if (l->running) {
+        errno = EINVAL;
+        return -1;
+    }
+
     g_active_loop = l;
+    l->running = true;
     l->backend_type->backend_start(l->backend);
+    l->running = false;
     g_active_loop = NULL;
 
     return 0;
@@ -267,7 +190,9 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
     task->arg = arg;
     task->owner = loop;
 
+    mtx_lock(&loop->lock);
     list_add_tail(&task->node, &loop->tasks);
+    mtx_unlock(&loop->lock);
 
     if (task_resume(task)) {
         task_free(task);
@@ -285,11 +210,13 @@ bool coro_task_running(struct coro_task *task)
 
 struct coro_loop *coro_task_parent(struct coro_task *task)
 {
+    assert(task);
     return task->owner;
 }
 
 enum coro_task_state coro_task_state(struct coro_task *task)
 {
+    assert(task);
     return task->state;
 }
 
@@ -378,6 +305,8 @@ void *coro_task_join(struct coro_task *task)
 {
     void *ret;
 
+    assert(coro_current_task() != task);
+
     if (coro_task_running(task)) {
         return NULL;
     }
@@ -427,6 +356,10 @@ void coro_queue_delete(struct coro_queue *queue)
 {
     struct coro_queue_data *data;
     struct coro_queue_data *_safe_data;
+
+    if (NULL == queue) {
+        return;
+    }
 
     list_for_each_entry_safe(data, _safe_data, &queue->data, node) {
         queue_data_destroy(data, true);
@@ -611,6 +544,8 @@ void coro_sleepms(uintmax_t amnt)
 {
     struct coro_trigger *trigger;
 
+    assert(coro_current_task());
+
     trigger = trigger_new_timer(g_active_loop, amnt);
     assert(trigger);
     trigger_add_watcher(trigger, coro_current_task());
@@ -644,7 +579,10 @@ void coro_wait_fd(int fd, int how)
 {
     struct coro_trigger *trigger;
 
-    trigger = trigger_new_io(g_active_loop, fd, how);
+    assert(coro_current());
+    assert(coro_current_task());
+
+    trigger = trigger_new_io(coro_current(), fd, how);
     trigger_add_watcher(trigger, coro_current_task());
     trigger_dec_ref(&trigger);
     coro_swap_to_sched();
@@ -867,11 +805,15 @@ static bool coro_should_exit(struct coro_loop *loop)
     struct coro_task *task;
     bool tasks_running = false;
 
+    mtx_lock(&loop->lock);
+
     list_for_each_entry(task, &loop->tasks, node) {
         if (coro_task_running(task)) {
             tasks_running = true;
         }
     }
+
+    mtx_unlock(&loop->lock);
 
     return !tasks_running;
 }
@@ -1035,11 +977,13 @@ static void task_free(struct coro_task *task)
         coro_free(task->name);
     }
 
-    coro_free(task);
-
-    if (g_active_loop && list_empty(&g_active_loop->tasks)) {
-        g_active_loop->backend_type->backend_stop(g_active_loop->backend);
+    mtx_lock(&task->owner->lock);
+    if (task->owner && list_empty(&task->owner->tasks)) {
+        task->owner->backend_type->backend_stop(task->owner->backend);
     }
+    mtx_unlock(&task->owner->lock);
+
+    coro_free(task);
 }
 
 static void task_remove_pending(struct coro_task *task)
