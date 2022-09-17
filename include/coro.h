@@ -19,13 +19,13 @@ extern "C" {
  * @macro CORO_FD_WAIT_READ
  * @brief Used to inform coro_wait_fd to wait for a read event to occur on the provided fd.
  */
-#define CORO_FD_WAIT_READ   0x01
+#define CORO_FD_WAIT_READ   (0x01)
 
 /**
  * @macro CORO_FD_WAIT_WRITE
  * @brief Used to inform coro_wait_fd to wait for a write event to occur on the provided fd.
  */
-#define CORO_FD_WAIT_WRITE  0x02
+#define CORO_FD_WAIT_WRITE  (0x02)
 
 /**
  * @macro CORO_BACKEND_EV
@@ -113,6 +113,15 @@ typedef void *(*coro_task_entry_f)(void *arg);
 typedef int (*coro_wait_custom_f)(void *cb_data);
 
 /**
+ * @typedef coro_void_f
+ * @brief Function prototype describig the signature of a custom loop callback. Used for the callsoon
+ * family of functions.
+ *
+ * @param cb_data Custom data passed to the routine.
+ */
+typedef void (*coro_void_f)(void *cb_data);
+
+/**
  * @typedef coro_cleanup_f
  * @brief Prototype of a task cleanup function. Registered with coro_register_cleanup.
  *
@@ -150,6 +159,19 @@ int coro_run(struct coro_loop *l);
  * @return Null if not in loop.
  */
 struct coro_loop *coro_current(void);
+
+/**
+ * @brief coro_callsoon and coro_callsoon_threadsafe add a callback to the schedular loop. The
+ * threadsafe variant allows this functionality to be accessed from a separate thread. If multi
+ * thread support is not enabled then both functions are equivilent.
+ *
+ * @param l The coro loop to add a callback to.
+ * @param func Callback function
+ * @param cb_data Callback data
+ * @return 0 on success and non-zero on failure.
+ */
+int coro_callsoon(struct coro_loop *l, coro_void_f func, void *cb_data);
+int coro_callsoon_threadsafe(struct coro_loop *l, coro_void_f func, void *cb_data);
 
 /**
  * @brief Returns the currently running task.

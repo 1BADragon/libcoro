@@ -24,13 +24,12 @@ struct coro_loop {
 
     struct list_head tasks;
     struct list_head queues;
-
     struct list_head customs;
+    struct list_head call_q;
 
     bool running;
 
     MTX_DECL(lock);
-    bool lock_init;
 };
 
 enum coro_watcher_type {
@@ -51,7 +50,10 @@ struct coro_trigger {
 
 struct coro_func_node {
     struct list_head node;
-    coro_cleanup_f func;
+    union {
+        coro_cleanup_f cleanup;
+        coro_void_f callsoon;
+    };
     void *arg;
 };
 

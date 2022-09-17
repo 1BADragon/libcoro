@@ -18,6 +18,7 @@ static THREAD_LOCAL struct coro_loop *g_active_loop;
 
 static void coro_maintenance(struct coro_loop *loop);
 
+static void process_call_queue(struct coro_loop *loop);
 static void check_custom_watchers(struct coro_loop *loop);
 static bool coro_should_exit(struct coro_loop *loop);
 
@@ -25,7 +26,6 @@ static int coro_event_trigger(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
 static void coro_swap_from_sched(struct coro_task *t);
 static void coro_start(struct coro_task *t);
-__attribute__((returns_twice))
 static void coro_swap(struct coro_ctx *in, struct coro_ctx *out);
 
 // Task functions
@@ -83,14 +83,13 @@ struct coro_loop *coro_new_loop(int flags)
     INIT_LIST_HEAD(&c->tasks);
     INIT_LIST_HEAD(&c->queues);
     INIT_LIST_HEAD(&c->customs);
+    INIT_LIST_HEAD(&c->call_q);
 
     c->running = false;
 
     if (mtx_init(&c->lock)) {
         goto error;
     }
-
-    c->lock_init = true;
 
     return c;
 
@@ -110,16 +109,12 @@ void coro_free_loop(struct coro_loop *c)
         return;
     }
 
-    mtx_lock(&c->lock);
-
     list_for_each_entry_safe(curr_task, _safe_task, &c->tasks, node) {
         if (TASK_STATE_RUNNING == curr_task->state) {
             task_cleanup(curr_task, TASK_EXIT_CANCELLED);
         }
         task_free(curr_task);
     }
-
-    mtx_unlock(&c->lock);
 
     list_for_each_entry_safe(curr_queue, _safe_queue, &c->queues, node) {
         coro_queue_delete(curr_queue);
@@ -129,8 +124,8 @@ void coro_free_loop(struct coro_loop *c)
         c->backend_type->backend_free(c->backend);
     }
 
-    if (c->lock_init) {
-        mtx_deinit(&c->lock);
+    if (mtx_alive(c->lock)) {
+        mtx_deinit(c->lock);
     }
 
     coro_free(c);
@@ -159,6 +154,55 @@ int coro_run(struct coro_loop *l)
 struct coro_loop *coro_current(void)
 {
     return g_active_loop;
+}
+
+int coro_callsoon(struct coro_loop *l, coro_void_f func, void *cb_data)
+{
+    if (NULL == l) {
+        l = coro_current();
+
+        if (NULL == l) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    struct coro_func_node *node = malloc(sizeof(struct coro_func_node));
+
+    if (NULL == node) {
+        return -1;
+    }
+
+    node->callsoon = func;
+    node->arg = cb_data;
+
+    list_add_tail(&node->node, &l->call_q);
+    return 0;
+}
+
+int coro_callsoon_threadsafe(struct coro_loop *l, coro_void_f func, void *cb_data)
+{
+    int rc = -1;
+
+    if (NULL == l) {
+        l = coro_current();
+
+        if (NULL == l) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    if (mtx_lock(l->lock)) {
+        goto EXIT;
+    }
+
+    rc = coro_callsoon(l, func, cb_data);
+
+    mtx_unlock(l->lock);
+
+EXIT:
+    return rc;
 }
 
 struct coro_task *coro_current_task()
@@ -190,10 +234,7 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
     task->arg = arg;
     task->owner = loop;
 
-    mtx_lock(&loop->lock);
     list_add_tail(&task->node, &loop->tasks);
-    mtx_unlock(&loop->lock);
-
     if (task_resume(task)) {
         task_free(task);
         task = NULL;
@@ -238,7 +279,7 @@ int coro_register_cleanup(struct coro_task *task, coro_cleanup_f func, void *arg
         return -1;
     }
 
-    node->func = func;
+    node->cleanup = func;
     node->arg = arg;
 
     list_add_tail(&node->node, &task->cleanup_list);
@@ -768,11 +809,29 @@ long coro_sendmsg(int sock, const struct msghdr *msg, int flags)
 
 static void coro_maintenance(struct coro_loop *loop)
 {
+    process_call_queue(loop);
     check_custom_watchers(loop);
 
     if (coro_should_exit(loop)) {
         loop->backend_type->backend_stop(loop->backend);
     }
+}
+
+static void process_call_queue(struct coro_loop *loop)
+{
+    struct coro_func_node *at;
+    struct coro_func_node *_safe;
+
+    mtx_lock(loop->lock);
+
+    list_for_each_entry_safe(at, _safe, &loop->call_q, node) {
+        at->callsoon(at->arg);
+
+        list_del(&at->node);
+        free(at);
+    }
+
+    mtx_unlock(loop->lock);
 }
 
 static void check_custom_watchers(struct coro_loop *loop)
@@ -805,15 +864,11 @@ static bool coro_should_exit(struct coro_loop *loop)
     struct coro_task *task;
     bool tasks_running = false;
 
-    mtx_lock(&loop->lock);
-
     list_for_each_entry(task, &loop->tasks, node) {
         if (coro_task_running(task)) {
             tasks_running = true;
         }
     }
-
-    mtx_unlock(&loop->lock);
 
     return !tasks_running;
 }
@@ -977,11 +1032,9 @@ static void task_free(struct coro_task *task)
         coro_free(task->name);
     }
 
-    mtx_lock(&task->owner->lock);
     if (task->owner && list_empty(&task->owner->tasks)) {
         task->owner->backend_type->backend_stop(task->owner->backend);
     }
-    mtx_unlock(&task->owner->lock);
 
     coro_free(task);
 }
@@ -1015,7 +1068,7 @@ static void task_cleanup(struct coro_task *t, enum coro_exit_how how)
     struct coro_func_node *_safe;
 
     list_for_each_entry_safe(at, _safe, &t->cleanup_list, node) {
-        at->func(how, at->arg);
+        at->cleanup(how, at->arg);
 
         list_del(&at->node);
         coro_free(at);

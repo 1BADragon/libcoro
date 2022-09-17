@@ -80,11 +80,6 @@ if (UB_SAN)
     target_link_options(coro PUBLIC -fsanitize=undefined)
 endif()
 
-if (THREAD_SAN)
-    target_compile_options(coro PUBLIC -fsanitize=thread)
-    target_link_options(coro PUBLIC -fsanitize=thread)
-endif()
-
 if (COVERAGE)
     target_compile_options(coro PUBLIC --coverage)
     target_link_options(coro PUBLIC --coverage)
@@ -98,6 +93,11 @@ if (THREAD_SUPPORT)
     target_compile_definitions(coro PUBLIC -DMULTI_THREAD=1)
     target_compile_options(coro PRIVATE -pthread)
     target_link_libraries(coro PUBLIC pthread)
+
+    if (THREAD_SAN)
+        target_compile_options(coro PUBLIC -fsanitize=thread)
+        target_link_options(coro PUBLIC -fsanitize=thread)
+    endif()
 endif()
 
 set_source_files_properties(src/coro_ev.c

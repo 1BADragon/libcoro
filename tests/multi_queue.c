@@ -14,6 +14,8 @@ void *producer_task(void *arg)
     for (size_t i = 0; i < N_VALS_P_PROD; ++i) {
         int *val = malloc(sizeof(int));
 
+        assert(NULL != val);
+
         *val = i;
         // no free function so memory leaks can be detected
         coro_queue_push(queue, val, NULL);
