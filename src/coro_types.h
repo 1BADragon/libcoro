@@ -50,6 +50,7 @@ struct coro_loop {
     void *async_watcher;
     struct coro_trigger async_trigger;
     atomic_bool async_pending;
+    int ret_code;
 
     bool running;
     MTX_DECL(lock);

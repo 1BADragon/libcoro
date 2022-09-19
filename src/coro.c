@@ -88,6 +88,7 @@ struct coro_loop *coro_new_loop(int flags)
     INIT_LIST_HEAD(&c->call_q);
 
     c->running = false;
+    c->ret_code = 0;
 
     if (mtx_init(&c->lock)) {
         goto error;
@@ -152,7 +153,7 @@ int coro_run(struct coro_loop *l)
     l->running = false;
     g_active_loop = NULL;
 
-    return 0;
+    return l->ret_code;
 }
 
 int coro_poke(struct coro_loop *l)
@@ -831,7 +832,11 @@ static void loop_async_callback(struct coro_trigger *trigger)
 
 static void coro_maintenance(struct coro_loop *loop)
 {
-    process_call_queue(loop);
+    if (process_call_queue(loop)) {
+        loop->ret_code = -1;
+        loop->backend_type->backend_stop(loop->backend);
+    }
+
     check_custom_watchers(loop);    
     process_ready_list(loop);
 
