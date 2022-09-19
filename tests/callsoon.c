@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <coro.h>
 
 #include "test_harness.h"

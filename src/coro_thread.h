@@ -22,8 +22,8 @@ bool mtx_alive(mutex_t *mtx);
 
 #define mtx_init(...) (0)
 #define mtx_deinit(...)
-#define mtx_lock(...)
-#define mtx_unlock(...)
+#define mtx_lock(...) (0)
+#define mtx_unlock(...) (0)
 #define mtx_alive(...)(false)
 #endif
 

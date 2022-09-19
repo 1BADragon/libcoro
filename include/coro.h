@@ -155,6 +155,16 @@ void coro_free_loop(struct coro_loop *l);
 int coro_run(struct coro_loop *l);
 
 /**
+ * @brief "Pokes" coroutine loop in order for it to process any pending events to check for
+ * such as out of loop triggers, like a custom watcher waiting for a memory reference to
+ * change. This function is always thread safe.
+ * @param l Loop to trigger, cannot be NULL.
+ *
+ * @return 0 on success or -1 on failure with errno set.
+ */
+int coro_poke(struct coro_loop *l);
+
+/**
  * @brief Returns the currently running loop.
  * @return Null if not in loop.
  */

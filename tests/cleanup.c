@@ -1,5 +1,4 @@
 #include <stdbool.h>
-#include <assert.h>
 #include <coro.h>
 
 #include "test_harness.h"
@@ -34,6 +33,7 @@ void *main_task(void *arg)
 
 static void set_int(enum coro_exit_how how, void *arg)
 {
+    (void) how;
     *(int *)arg = 1;
 }
 

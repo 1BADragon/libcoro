@@ -1,5 +1,5 @@
-#include <assert.h>
 #include <coro.h>
+#include <inttypes.h>
 
 #include "test_harness.h"
 

@@ -16,13 +16,16 @@
 
 static THREAD_LOCAL struct coro_loop *g_active_loop;
 
+static void loop_async_callback(struct coro_trigger *trigger);
 static void coro_maintenance(struct coro_loop *loop);
 
-static void process_call_queue(struct coro_loop *loop);
+static int process_call_queue(struct coro_loop *loop);
+static void process_ready_list(struct coro_loop *loop);
 static void check_custom_watchers(struct coro_loop *loop);
 static bool coro_should_exit(struct coro_loop *loop);
+static int coro_event_trigger(struct coro_task *t);
 
-static int coro_event_trigger(struct coro_task *t, int revent);
+static int coro_event_queue(struct coro_task *t, int revent);
 static void coro_swap_to_sched(void);
 static void coro_swap_from_sched(struct coro_task *t);
 static void coro_start(struct coro_task *t);
@@ -30,7 +33,6 @@ static void coro_swap(struct coro_ctx *in, struct coro_ctx *out);
 
 // Task functions
 static struct coro_task *task_new(size_t stack_size);
-static int task_resume(struct coro_task *task);
 static void task_trigger_waiters(struct coro_task *task);
 static void task_free(struct coro_task *task);
 static void task_remove_pending(struct coro_task *task);
@@ -40,12 +42,10 @@ static void task_cleanup(struct coro_task *t, enum coro_exit_how how);
 // Trigger Functions
 static struct coro_trigger *trigger_new(struct coro_loop *loop);
 static struct coro_trigger *trigger_new_async(struct coro_loop *loop);
-static struct coro_trigger *trigger_new_idle(struct coro_loop *loop);
 static struct coro_trigger *trigger_new_timer(struct coro_loop *loop, uintmax_t time);
 static struct coro_trigger *trigger_new_io(struct coro_loop *loop, int fd, int how);
 
 static void async_triggered(struct coro_trigger *trigger);
-static void idle_triggered(struct coro_trigger *trigger);
 static void timer_triggered(struct coro_trigger *trigger);
 static void io_triggered(struct coro_trigger *trigger, int revents);
 
@@ -77,12 +77,14 @@ struct coro_loop *coro_new_loop(int flags)
         goto error;
     }
 
-    c->backend_type->register_maintenance(c->backend, c, &coro_maintenance);
+    c->async_trigger.private = c;
+    c->async_watcher = c->backend_type->new_async(c->backend, &loop_async_callback, &c->async_trigger);
 
     c->active = NULL;
-    INIT_LIST_HEAD(&c->tasks);
-    INIT_LIST_HEAD(&c->queues);
-    INIT_LIST_HEAD(&c->customs);
+    INIT_LIST_HEAD(&c->ready_l);
+    INIT_LIST_HEAD(&c->tasks_l);
+    INIT_LIST_HEAD(&c->queues_l);
+    INIT_LIST_HEAD(&c->customs_l);
     INIT_LIST_HEAD(&c->call_q);
 
     c->running = false;
@@ -109,16 +111,18 @@ void coro_free_loop(struct coro_loop *c)
         return;
     }
 
-    list_for_each_entry_safe(curr_task, _safe_task, &c->tasks, node) {
+    list_for_each_entry_safe(curr_task, _safe_task, &c->tasks_l, node) {
         if (TASK_STATE_RUNNING == curr_task->state) {
             task_cleanup(curr_task, TASK_EXIT_CANCELLED);
         }
         task_free(curr_task);
     }
 
-    list_for_each_entry_safe(curr_queue, _safe_queue, &c->queues, node) {
+    list_for_each_entry_safe(curr_queue, _safe_queue, &c->queues_l, node) {
         coro_queue_delete(curr_queue);
     }
+
+    c->backend_type->free_async(c->async_watcher);
 
     if (c->backend) {
         c->backend_type->backend_free(c->backend);
@@ -151,6 +155,17 @@ int coro_run(struct coro_loop *l)
     return 0;
 }
 
+int coro_poke(struct coro_loop *l)
+{
+    bool b = false;
+
+    if (atomic_compare_exchange_strong(&l->async_pending, &b, true)) {
+        l->backend_type->trigger_async(l->async_watcher);
+    }
+
+    return 0;
+}
+
 struct coro_loop *coro_current(void)
 {
     return g_active_loop;
@@ -167,7 +182,7 @@ int coro_callsoon(struct coro_loop *l, coro_void_f func, void *cb_data)
         }
     }
 
-    struct coro_func_node *node = malloc(sizeof(struct coro_func_node));
+    struct coro_func_node *node = coro_zalloc(sizeof(struct coro_func_node));
 
     if (NULL == node) {
         return -1;
@@ -177,6 +192,7 @@ int coro_callsoon(struct coro_loop *l, coro_void_f func, void *cb_data)
     node->arg = cb_data;
 
     list_add_tail(&node->node, &l->call_q);
+    coro_poke(l);
     return 0;
 }
 
@@ -199,7 +215,9 @@ int coro_callsoon_threadsafe(struct coro_loop *l, coro_void_f func, void *cb_dat
 
     rc = coro_callsoon(l, func, cb_data);
 
-    mtx_unlock(l->lock);
+    if (mtx_unlock(l->lock)) {
+        rc = -1;
+    }
 
 EXIT:
     return rc;
@@ -234,8 +252,8 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
     task->arg = arg;
     task->owner = loop;
 
-    list_add_tail(&task->node, &loop->tasks);
-    if (task_resume(task)) {
+    list_add_tail(&task->node, &loop->tasks_l);
+    if (coro_event_queue(task, CORO_WAIT_RESUME)) {
         task_free(task);
         task = NULL;
     }
@@ -314,7 +332,7 @@ int coro_task_set_name(struct coro_task *task, const char *name)
     }
 
     task->name = ptr;
-    strncpy(task->name, name, len);
+    memcpy(task->name, name, len);
     task->name[len] = '\0';
     return 0;
 }
@@ -384,7 +402,7 @@ struct coro_queue *coro_queue_new(struct coro_loop *loop)
     }
 
     INIT_LIST_HEAD(&new_queue->data);
-    list_add_tail(&new_queue->node, &loop->queues);
+    list_add_tail(&new_queue->node, &loop->queues_l);
     new_queue->write_closed = false;
     return new_queue;
 
@@ -423,7 +441,6 @@ int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *)
 
     list_add_tail(&chunk->node, &queue->data);
     queue->parent->backend_type->trigger_async(queue->sig->private);
-
     return 0;
 }
 
@@ -491,7 +508,7 @@ bool coro_await_val(struct coro_task *task, void **val_p)
     if (coro_task_state(task) == TASK_STATE_YEILDING) {
         task->val = NULL;
         task->state = TASK_STATE_RUNNING;
-        task_resume(task);
+        coro_event_queue(task, CORO_WAIT_RESUME);
     } else if (coro_task_state(task) == TASK_STATE_FINISHED) {
         task_free(task);
         ret = true;
@@ -505,17 +522,11 @@ bool coro_await_val(struct coro_task *task, void **val_p)
 void coro_yeild()
 {
     struct coro_task *_curr_task;
-    struct coro_trigger *trigger;
 
     _curr_task = coro_current_task();
-
     assert(_curr_task != NULL);
 
-    trigger = trigger_new_idle(g_active_loop);
-
-    trigger_add_watcher(trigger, _curr_task);
-    trigger_dec_ref(&trigger);
-
+    coro_event_queue(_curr_task, CORO_WAIT_RESUME);
     coro_swap_to_sched();
 }
 
@@ -612,7 +623,8 @@ void coro_wait_custom(coro_wait_custom_f poll, void *cb_data)
     custom->poll = poll;
     custom->cb_data = cb_data;
 
-    list_add_tail(&custom->node, &loop->customs);
+    list_add_tail(&custom->node, &loop->customs_l);
+    coro_poke(loop);
     coro_swap_to_sched();
 }
 
@@ -807,31 +819,68 @@ long coro_sendmsg(int sock, const struct msghdr *msg, int flags)
  * Internal Functions *
  *********************/
 
+static void loop_async_callback(struct coro_trigger *trigger)
+{
+    bool b = true;
+    struct coro_loop *loop = trigger->private;
+
+    if (atomic_compare_exchange_weak(&loop->async_pending, &b, false)) {
+        coro_maintenance(loop);
+    }
+}
+
 static void coro_maintenance(struct coro_loop *loop)
 {
     process_call_queue(loop);
-    check_custom_watchers(loop);
+    check_custom_watchers(loop);    
+    process_ready_list(loop);
 
     if (coro_should_exit(loop)) {
         loop->backend_type->backend_stop(loop->backend);
     }
 }
 
-static void process_call_queue(struct coro_loop *loop)
+static void process_ready_list(struct coro_loop *loop)
+{
+    struct coro_task *at;
+    struct coro_task *_safe;
+    struct list_head copy;
+
+    if (!list_empty(&loop->ready_l)) {
+        list_cut_before(&copy, &loop->ready_l, &loop->ready_l);
+
+        list_for_each_entry_safe(at, _safe, &copy, running_list)
+        {
+            // Remove the list's running queued status so it can re-queue
+            list_del_init(&at->running_list);
+            coro_event_trigger(at);
+        }
+
+        coro_poke(loop);
+    }
+}
+
+static int process_call_queue(struct coro_loop *loop)
 {
     struct coro_func_node *at;
     struct coro_func_node *_safe;
 
-    mtx_lock(loop->lock);
-
-    list_for_each_entry_safe(at, _safe, &loop->call_q, node) {
-        at->callsoon(at->arg);
-
-        list_del(&at->node);
-        free(at);
+    if (mtx_lock(loop->lock)) {
+        return -1;
     }
 
-    mtx_unlock(loop->lock);
+    if (!list_empty(&loop->call_q)) {
+        list_for_each_entry_safe(at, _safe, &loop->call_q, node) {
+            at->callsoon(at->arg);
+
+            list_del(&at->node);
+            free(at);
+        }
+
+        coro_poke(loop);
+    }
+
+    return mtx_unlock(loop->lock);
 }
 
 static void check_custom_watchers(struct coro_loop *loop)
@@ -842,7 +891,7 @@ static void check_custom_watchers(struct coro_loop *loop)
     struct list_head copy;
     INIT_LIST_HEAD(&copy);
 
-    list_cut_before(&copy, &loop->customs, &loop->customs);
+    list_cut_before(&copy, &loop->customs_l, &loop->customs_l);
 
     list_for_each_entry_safe(at, safe, &copy, node) {
         // either way this will be removed from this list
@@ -850,11 +899,11 @@ static void check_custom_watchers(struct coro_loop *loop)
 
         if (!at->poll(at->cb_data)) {
             // The task is ready
-            coro_event_trigger(at->task, CORO_WAIT_CUSTOM);
+            coro_event_queue(at->task, CORO_WAIT_CUSTOM);
             free(at);
         } else {
             // The task is not ready place it on the real list
-            list_add_tail(&at->node, &loop->customs);
+            list_add_tail(&at->node, &loop->customs_l);
         }
     }
 }
@@ -864,7 +913,7 @@ static bool coro_should_exit(struct coro_loop *loop)
     struct coro_task *task;
     bool tasks_running = false;
 
-    list_for_each_entry(task, &loop->tasks, node) {
+    list_for_each_entry(task, &loop->tasks_l, node) {
         if (coro_task_running(task)) {
             tasks_running = true;
         }
@@ -873,10 +922,8 @@ static bool coro_should_exit(struct coro_loop *loop)
     return !tasks_running;
 }
 
-static int coro_event_trigger(struct coro_task *t, int revent)
+static int coro_event_trigger(struct coro_task *t)
 {
-    t->last_revent = revent;
-
     // called directly
     switch(coro_task_state(t)) {
     case TASK_STATE_INIT:
@@ -900,6 +947,21 @@ static int coro_event_trigger(struct coro_task *t, int revent)
         break;
     }
 
+    t->last_revent = 0;
+
+    return 0;
+}
+
+static int coro_event_queue(struct coro_task *t, int revent)
+{
+    assert(t);
+    assert(t->owner);
+
+    t->last_revent |= revent;
+    if (list_empty(&t->running_list)) {
+        list_add_tail(&t->running_list, &t->owner->ready_l);
+    }
+    coro_poke(t->owner);
     return 0;
 }
 
@@ -985,24 +1047,13 @@ static struct coro_task *task_new(size_t stack_size)
 
     INIT_LIST_HEAD(&task->cleanup_list);
 
+    // Running list node should be initialized
+    INIT_LIST_HEAD(&task->running_list);
+
     return task;
 error:
     task_free(task);
     return NULL;
-}
-
-static int task_resume(struct coro_task *task)
-{
-    struct coro_trigger *trigger = NULL;
-
-    trigger = trigger_new_idle(task->owner);
-    if (!trigger) {
-        return -1;
-    }
-
-    trigger_add_watcher(trigger, task);
-    trigger_dec_ref(&trigger);
-    return 0;
 }
 
 static void task_trigger_waiters(struct coro_task *task)
@@ -1021,6 +1072,7 @@ static void task_free(struct coro_task *task)
     assert(list_empty(&task->cleanup_list));
 
     list_del(&task->node);
+    list_del(&task->running_list);
 
     task_remove_pending(task);
 
@@ -1032,7 +1084,12 @@ static void task_free(struct coro_task *task)
         coro_free(task->name);
     }
 
-    if (task->owner && list_empty(&task->owner->tasks)) {
+    if (task->pending) {
+        list_del(&task->trigger_list);
+        task->pending = NULL;
+    }
+
+    if (task->owner && list_empty(&task->owner->tasks_l)) {
         task->owner->backend_type->backend_stop(task->owner->backend);
     }
 
@@ -1108,19 +1165,6 @@ static struct coro_trigger *trigger_new_async(struct coro_loop *loop)
     return trigger;
 }
 
-static struct coro_trigger *trigger_new_idle(struct coro_loop *loop)
-{
-    struct coro_trigger *trigger = trigger_new(loop);
-
-    if (!trigger) {
-        return NULL;
-    }
-
-    trigger->type = CORO_IDLE;
-    trigger->private = loop->backend_type->new_idle(loop->backend, &idle_triggered, trigger);
-    return trigger;
-}
-
 static struct coro_trigger *trigger_new_timer(struct coro_loop *loop, uintmax_t time_ms)
 {
     struct coro_trigger *trigger = trigger_new(loop);
@@ -1157,11 +1201,6 @@ static void async_triggered(struct coro_trigger *trigger)
     triggered(trigger, CORO_WAIT_ASYNC);
 }
 
-static void idle_triggered(struct coro_trigger *trigger)
-{
-    triggered(trigger, CORO_WAIT_IDLE);
-}
-
 static void timer_triggered(struct coro_trigger *trigger)
 {
     triggered(trigger, CORO_WAIT_TIMER);
@@ -1188,7 +1227,7 @@ static void triggered(struct coro_trigger *trigger, int revents)
 
     list_for_each_entry_safe(task, _safe, &tmp_list, trigger_list) {
         trigger_del_watcher(trigger, task);
-        coro_event_trigger(task, revents);
+        coro_event_queue(task, revents);
     }
 
     trigger_dec_ref(&trigger);

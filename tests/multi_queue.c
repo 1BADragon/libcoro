@@ -1,6 +1,7 @@
 #include <stdlib.h>
-#include <assert.h>
 #include <coro.h>
+
+#include "test_harness.h"
 
 struct consumer_args {
     int *val;

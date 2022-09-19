@@ -1,6 +1,7 @@
 #ifndef CORO_TYPES_H
 #define CORO_TYPES_H
 
+#include <stdatomic.h>
 #include <list.h>
 #include <coro.h>
 #include <coro_arch.h>
@@ -14,23 +15,8 @@
 #define CORO_WAIT_IDLE (1 << 4)
 // Used when a CUSTOM event watcher indicates its ready.
 #define CORO_WAIT_CUSTOM (1 << 5)
-
-struct coro_loop {
-    struct coro_backend *backend;
-    struct coro_backend_type *backend_type;
-
-    struct coro_ctx sched_ctx;
-    struct coro_task *active;
-
-    struct list_head tasks;
-    struct list_head queues;
-    struct list_head customs;
-    struct list_head call_q;
-
-    bool running;
-
-    MTX_DECL(lock);
-};
+// Used when a RESUME event has occured.
+#define CORO_WAIT_RESUME (1 << 6)
 
 enum coro_watcher_type {
     CORO_NONE,
@@ -48,6 +34,27 @@ struct coro_trigger {
     unsigned int ref_count;
 };
 
+struct coro_loop {
+    struct coro_backend *backend;
+    struct coro_backend_type *backend_type;
+
+    struct coro_ctx sched_ctx;
+    struct coro_task *active;
+
+    struct list_head ready_l;
+    struct list_head tasks_l;
+    struct list_head queues_l;
+    struct list_head customs_l;
+    struct list_head call_q;
+
+    void *async_watcher;
+    struct coro_trigger async_trigger;
+    atomic_bool async_pending;
+
+    bool running;
+    MTX_DECL(lock);
+};
+
 struct coro_func_node {
     struct list_head node;
     union {
@@ -62,6 +69,7 @@ struct coro_task {
     struct list_head node;
 
     struct list_head trigger_list;
+    struct list_head running_list;
     struct coro_trigger *pending;
 
     int last_revent;

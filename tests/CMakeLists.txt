@@ -3,7 +3,8 @@ macro(new_test BASE_NAME)
         test_harness.c test_harness.h ${ARGN})
     target_link_libraries(${BASE_NAME}_test coro)
 
-    add_test(NAME test_${BASE_NAME}_test COMMAND ${BASE_NAME}_test)
+    add_test(NAME ${BASE_NAME}_test COMMAND ${BASE_NAME}_test)
+    set_tests_properties(${BASE_NAME}_test PROPERTIES TIMEOUT 3)
 endmacro()
 
 new_test(basic_run basic_run.c)

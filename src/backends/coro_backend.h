@@ -13,8 +13,6 @@ struct coro_trigger;
 typedef void(*coro_io_triggered_f)(struct coro_trigger *, int revents);
 /// Event callback for all other backend items.
 typedef void(*coro_triggered_f)(struct coro_trigger *);
-/// Maintenance callback from the backend. Should be called once per loop.
-typedef void(*coro_maintenance_f)(struct coro_loop *);
 
 /**
  * @brief The coro_backend_type struct is used to define the API of a coroutine backend. The type
@@ -32,10 +30,6 @@ struct coro_backend_type {
     /// Stops the event loop of the backend context. This should break all the way out of the
     /// backend loop.
     void (*backend_stop)(struct coro_backend *);
-    /// Registers a mantenence function with the backend to be called no more than once per loop.
-    void (*register_maintenance)(struct coro_backend *,
-                                 struct coro_loop *,
-                                 coro_maintenance_f func);
 
     /// Create a new io trigger context. Trigger function should be called with the event gathered.
     /// Trigger should be active when this function returns.

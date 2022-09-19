@@ -15,8 +15,6 @@ struct coro_ev_watcher {
 
 struct coro_backend {
     struct ev_loop *_loop;
-    struct coro_ev_watcher maintenance;
-    coro_maintenance_f maintenance_cb;
     struct coro_loop *parent;
 };
 
@@ -24,9 +22,6 @@ static struct coro_backend *coro_libev_new(int flags);
 static void coro_libev_free(struct coro_backend *backend);
 static void coro_libev_start(struct coro_backend *backend);
 static void coro_libev_stop(struct coro_backend *backend);
-static void coro_libev_register_maintenance(struct coro_backend *backend,
-                                            struct coro_loop *loop,
-                                            coro_maintenance_f func);
 static void *coro_libev_new_io(struct coro_backend *backend,
                                coro_io_triggered_f func,
                                struct coro_trigger *trigger,
@@ -56,15 +51,12 @@ static void coro_ev_io_cb(struct ev_loop *loop, ev_io *watcher, int revents);
 static void coro_ev_idle_cb(struct ev_loop *loop, ev_idle *watcher, int revents);
 static void coro_ev_async_cb(struct ev_loop *loop, ev_async *watcher, int revents);
 static void coro_ev_timer_cb(struct ev_loop *loop, ev_timer *watcher, int revents);
-static void coro_ev_prepare_cb(struct ev_loop *loop, ev_prepare *watcher, int revents);
 
 static struct coro_backend_type coro_libev_backend_type = {
     .backend_new = coro_libev_new,
     .backend_free = coro_libev_free,
     .backend_start = coro_libev_start,
     .backend_stop = coro_libev_stop,
-
-    .register_maintenance = coro_libev_register_maintenance,
 
     .new_io = coro_libev_new_io,
     .free_io = coro_libev_free_io,
@@ -105,7 +97,6 @@ static struct coro_backend *coro_libev_new(int flags)
 
 static void coro_libev_free(struct coro_backend *backend)
 {
-    ev_prepare_stop(backend->_loop, &backend->maintenance.watcher.prepare);
     ev_loop_destroy(backend->_loop);
     coro_free(backend);
 }
@@ -118,19 +109,6 @@ static void coro_libev_start(struct coro_backend *backend)
 static void coro_libev_stop(struct coro_backend *backend)
 {
     ev_break(backend->_loop, EVBREAK_ALL);
-}
-
-static void coro_libev_register_maintenance(struct coro_backend *backend,
-                                            struct coro_loop *loop,
-                                            coro_maintenance_f func)
-{
-    ev_prepare_init(&backend->maintenance.watcher.prepare, &coro_ev_prepare_cb);
-    ev_prepare_start(backend->_loop, &backend->maintenance.watcher.prepare);
-
-    backend->maintenance.backend = backend;
-
-    backend->maintenance_cb = func;
-    backend->parent = loop;
 }
 
 static void *coro_libev_new_io(struct coro_backend *backend,
@@ -304,17 +282,4 @@ static void coro_ev_timer_cb(struct ev_loop *loop, ev_timer *watcher, int revent
     assert(revents == EV_TIMER);
 
     ((coro_triggered_f)w->cb)(w->trigger);
-}
-
-static void coro_ev_prepare_cb(struct ev_loop *loop, ev_prepare *watcher, int revents)
-{
-    (void)loop;
-    (void)revents;
-    struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
-
-    assert(w->backend->_loop == loop);
-    assert(w->backend->maintenance_cb);
-    assert(revents == EV_PREPARE);
-
-    w->backend->maintenance_cb(w->backend->parent);
 }

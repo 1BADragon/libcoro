@@ -143,7 +143,15 @@ static long coro_stacksize_def(void)
 
 static void *coro_stackalloc_def(unsigned long size)
 {
+    if (size % PAGE_SIZE) {
+        size = (size + PAGE_SIZE) & ~PAGE_SIZE;
+    }
+
     void *ptr = mmap(NULL, size + (PAGE_SIZE * 2), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (NULL == ptr) {
+        return NULL;
+    }
 
     // create protected pages to prevent stack overflow
     mprotect(ptr, PAGE_SIZE, PROT_NONE);

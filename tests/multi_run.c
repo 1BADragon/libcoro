@@ -1,5 +1,6 @@
-#include <assert.h>
 #include <coro.h>
+
+#include "test_harness.h"
 
 #define N_TASKS (1000)
 
