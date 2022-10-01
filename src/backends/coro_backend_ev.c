@@ -27,10 +27,6 @@ static void *coro_libev_new_io(struct coro_backend *backend,
                                struct coro_trigger *trigger,
                                int fd, int events);
 static void coro_libev_free_io(void *_io);
-static void *coro_libev_new_idle(struct coro_backend *backend,
-                                 coro_triggered_f func,
-                                 struct coro_trigger *trigger);
-static void coro_libev_free_idle(void *_idle);
 static void *coro_libev_new_async(struct coro_backend *backend,
                                   coro_triggered_f func,
                                   struct coro_trigger *trigger);
@@ -48,7 +44,6 @@ static struct coro_ev_watcher *create_watcher(struct coro_backend *backend,
 static void destroy_watcher(struct coro_ev_watcher *w);
 
 static void coro_ev_io_cb(struct ev_loop *loop, ev_io *watcher, int revents);
-static void coro_ev_idle_cb(struct ev_loop *loop, ev_idle *watcher, int revents);
 static void coro_ev_async_cb(struct ev_loop *loop, ev_async *watcher, int revents);
 static void coro_ev_timer_cb(struct ev_loop *loop, ev_timer *watcher, int revents);
 
@@ -60,9 +55,6 @@ static struct coro_backend_type coro_libev_backend_type = {
 
     .new_io = coro_libev_new_io,
     .free_io = coro_libev_free_io,
-
-    .new_idle = coro_libev_new_idle,
-    .free_idle = coro_libev_free_idle,
 
     .new_async = coro_libev_new_async,
     .free_async = coro_libev_free_async,
@@ -133,30 +125,6 @@ static void coro_libev_free_io(void *_io)
     ev_io_stop(io->backend->_loop, &io->watcher.io);
 
     destroy_watcher(io);
-}
-
-static void *coro_libev_new_idle(struct coro_backend *backend,
-                                 coro_triggered_f func,
-                                 struct coro_trigger *trigger)
-{
-    struct coro_ev_watcher *w = create_watcher(backend, func, trigger);
-
-    if (!w) {
-        return NULL;
-    }
-
-    ev_idle_init(&w->watcher.idle, &coro_ev_idle_cb);
-    ev_idle_start(backend->_loop, &w->watcher.idle);
-
-    return w;
-}
-
-static void coro_libev_free_idle(void *_idle)
-{
-    struct coro_ev_watcher *idle = _idle;
-
-    ev_idle_stop(idle->backend->_loop, &idle->watcher.idle);
-    destroy_watcher(idle);
 }
 
 static void *coro_libev_new_async(struct coro_backend *backend,
@@ -243,19 +211,6 @@ static void coro_ev_io_cb(struct ev_loop *loop, ev_io *watcher, int revents)
     assert(w->cb);
 
     ((coro_io_triggered_f)w->cb)(w->trigger, revents);
-}
-
-static void coro_ev_idle_cb(struct ev_loop *loop, ev_idle *watcher, int revents)
-{
-    (void)loop;
-    (void)revents;
-    struct coro_ev_watcher *w = (struct coro_ev_watcher *)watcher;
-
-    assert(w->backend->_loop == loop);
-    assert(w->cb);
-    assert(revents == EV_IDLE);
-
-    ((coro_triggered_f)w->cb)(w->trigger);
 }
 
 static void coro_ev_async_cb(struct ev_loop *loop, ev_async *watcher, int revents)

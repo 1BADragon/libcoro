@@ -38,12 +38,6 @@ struct coro_backend_type {
     /// Deactivates and releases the io trigger from the caller.
     void (*free_io)(void *);
 
-    /// New idle watcher, should be called when no other watchers are triggered. Should be active
-    /// when this function returns.
-    void *(*new_idle)(struct coro_backend *, coro_triggered_f, struct coro_trigger *);
-    // Deactivates and releases the idle trigger from the caller
-    void (*free_idle)(void *);
-
     /// New async watcher, triggered manually by *trigger_async* API function. Should be active
     /// when this function returns.
     void *(*new_async)(struct coro_backend *, coro_triggered_f, struct coro_trigger *);

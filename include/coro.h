@@ -70,8 +70,10 @@ enum coro_task_wait_how {
  * @brief The coro_task_state enum indicates the current task running state.
  */
 enum coro_task_state {
+    /// An invalid state value
+    TASK_STATE_INVALID = -1,
     /// A task has been created but not started.
-    TASK_STATE_INIT,
+    TASK_STATE_INIT = 0,
     /// A task has been started. This is the state of a task until it's entry point returns.
     TASK_STATE_RUNNING,
     /// A task has been started and is currently yeilding a result. Will resume once result is
@@ -215,6 +217,9 @@ struct coro_loop *coro_task_parent(struct coro_task *task);
 
 /**
  * @brief Returns the current state of a provided task.
+ *
+ * @return Returns the current task state or CORO_STATE_INVALID if the task is in an
+ * invalid state or if `task` is NULL.
  */
 enum coro_task_state coro_task_state(struct coro_task *task);
 
@@ -225,7 +230,7 @@ enum coro_task_state coro_task_state(struct coro_task *task);
  * running task.
  * @param func Function to call at cleanup.
  * @param arg Argument passed to the function, at cleanup.
- * @return
+ * @return 0 on success
  */
 int coro_register_cleanup(struct coro_task *task, coro_cleanup_f func, void *arg);
 
@@ -246,14 +251,20 @@ const char *coro_task_name(struct coro_task *task);
 /**
  * @brief Cancels and destroys a coroutine context. This should not be called from the active
  * task. Can be called from either within or outside of a coroutine loop. Once called the task
- * is no longer valid and should no longer be accessed.
+ * is no longer valid and should no longer be accessed. Cleanup functions registered for the
+ * task are still called.
  */
 int coro_cancel_task(struct coro_task *task);
 
 // Wait from outside the loop
 /**
  * @brief Collects the return result of a completed coroutine and frees the coroutine's data. Will
- * return NULL if the task is not completed yet.
+ * return NULL if the task is not completed yet. This function should only be called from outside
+ * the coroutine event loop.
+ *
+ * @return The returned value from the task. It is possible to return NULL and either be an error
+ * or not. Check errno if possible. If the task is still running NULL is returned and errno is
+ * set to EBUSY.
  */
 void *coro_task_join(struct coro_task *task);
 

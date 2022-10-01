@@ -18,10 +18,15 @@
 // Used when a RESUME event has occured.
 #define CORO_WAIT_RESUME (1 << 6)
 
+/**
+ * @brief The coro_watcher_type enum is used for internal records of watcher types. Used when
+ * its time to delete a watcher type.
+ */
 enum coro_watcher_type {
+    // Watcher type was never set, typically the case under an error condition.
     CORO_NONE,
+    // IO watcher type for kernel file descriptors.
     CORO_IO,
-    CORO_IDLE,
     CORO_ASYNC,
     CORO_TIMER,
 };

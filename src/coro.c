@@ -38,6 +38,7 @@ static void task_free(struct coro_task *task);
 static void task_remove_pending(struct coro_task *task);
 static int allocate_stack(struct coro_task *t, size_t size);
 static void task_cleanup(struct coro_task *t, enum coro_exit_how how);
+static char *task_defaultname(struct coro_task *t);
 
 // Trigger Functions
 static struct coro_trigger *trigger_new(struct coro_loop *loop);
@@ -67,13 +68,13 @@ struct coro_loop *coro_new_loop(int flags)
     struct coro_loop *c = NULL;
 
     c = coro_zalloc(sizeof(struct coro_loop));
-    if (!c) {
+    if (NULL == c) {
         goto error;
     }
 
     c->backend_type = coro_select_backend(flags);
     c->backend = c->backend_type->backend_new(flags);
-    if (!c->backend) {
+    if (NULL == c->backend) {
         goto error;
     }
 
@@ -125,7 +126,7 @@ void coro_free_loop(struct coro_loop *c)
 
     c->backend_type->free_async(c->async_watcher);
 
-    if (c->backend) {
+    if (NULL != c->backend) {
         c->backend_type->backend_free(c->backend);
     }
 
@@ -253,6 +254,8 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
     task->arg = arg;
     task->owner = loop;
 
+    task->name = task_defaultname(task);
+
     list_add_tail(&task->node, &loop->tasks_l);
     if (coro_event_queue(task, CORO_WAIT_RESUME)) {
         task_free(task);
@@ -264,19 +267,29 @@ struct coro_task *coro_create_task(struct coro_loop *loop,
 
 bool coro_task_running(struct coro_task *task)
 {
-    return coro_task_state(task) == TASK_STATE_INIT ||
-            coro_task_state(task) == TASK_STATE_RUNNING;
+    enum coro_task_state state = coro_task_state(task);
+
+    return TASK_STATE_INIT == state ||
+            TASK_STATE_RUNNING == state;
 }
 
 struct coro_loop *coro_task_parent(struct coro_task *task)
 {
-    assert(task);
+    if (NULL == task) {
+        errno = EINVAL;
+        return NULL;
+    }
+
     return task->owner;
 }
 
 enum coro_task_state coro_task_state(struct coro_task *task)
 {
-    assert(task);
+    if (NULL == task) {
+        errno = EINVAL;
+        return TASK_STATE_INVALID;
+    }
+
     return task->state;
 }
 
@@ -316,11 +329,13 @@ int coro_task_set_name(struct coro_task *task, const char *name)
         }
     }
 
+    if (task->name) {
+        coro_free(task->name);
+        task->name = NULL;
+    }
+
     if (NULL == name) {
-        if (task->name) {
-            coro_free(task->name);
-            task->name = NULL;
-        }
+        task->name = task_defaultname(task);
         return 0;
     }
 
@@ -340,7 +355,7 @@ int coro_task_set_name(struct coro_task *task, const char *name)
 
 const char *coro_task_name(struct coro_task *task)
 {
-    if (!task) {
+    if (NULL == task) {
         return "(null)";
     }
 
@@ -365,15 +380,20 @@ void *coro_task_join(struct coro_task *task)
 {
     void *ret;
 
-    assert(coro_current_task() != task);
+    if (coro_current_task() == task) {
+        errno = EINVAL;
+        return NULL;
+    }
 
     if (coro_task_running(task)) {
+        errno = EBUSY;
         return NULL;
     }
 
     ret = task->val;
     task_free(task);
 
+    errno = 0;
     return ret;
 }
 
@@ -436,7 +456,7 @@ int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *)
 {
     struct coro_queue_data *chunk = queue_data_build(data, free_f);
 
-    if (!chunk) {
+    if (NULL == chunk) {
         return -1;
     }
 
@@ -451,13 +471,13 @@ void *coro_queue_pop(struct coro_queue *queue)
     struct coro_task *curr_task;
 
     curr_task = coro_current_task();
-    if (!curr_task) {
+    if (NULL == curr_task) {
         return NULL;
     }
 
     for (;;) {
         ret = coro_queue_pop_nowait(queue);
-        if (ret) {
+        if (ret != NULL) {
             return ret;
         }
 
@@ -476,7 +496,7 @@ void *coro_queue_pop_nowait(struct coro_queue *queue)
 
     data = list_first_entry_or_null(&queue->data, struct coro_queue_data, node);
 
-    if (!data) {
+    if (NULL == data) {
         return NULL;
     }
 
@@ -503,17 +523,27 @@ void *coro_await(struct coro_task *task)
 bool coro_await_val(struct coro_task *task, void **val_p)
 {
     bool ret = false;
+    enum coro_task_state state = TASK_STATE_INVALID;
+
+    if (NULL == task) {
+        errno = EINVAL;
+        return false;
+    }
+
     coro_wait_tasks(&task, 1, CORO_TASK_WAIT_ALL);
     *val_p = task->val;
 
-    if (coro_task_state(task) == TASK_STATE_YEILDING) {
+    state = coro_task_state(task);
+
+    if (TASK_STATE_YEILDING == state) {
         task->val = NULL;
         task->state = TASK_STATE_RUNNING;
         coro_event_queue(task, CORO_WAIT_RESUME);
-    } else if (coro_task_state(task) == TASK_STATE_FINISHED) {
+    } else if (TASK_STATE_FINISHED == state) {
         task_free(task);
         ret = true;
     } else {
+        // Some kind of failure of backend logic occured.
         assert(0);
     }
 
@@ -942,14 +972,14 @@ static int coro_event_trigger(struct coro_task *t)
         // Resume execution in the coro
         coro_swap_from_sched(t);
         break;
-    case TASK_STATE_YEILDING:
-        // A yeilding task should not have a trigger associated with it
-        assert(0);
-        return -1;
     case TASK_STATE_FINISHED:
         // This might be a stale watcher, this also
         // might be an error state
         break;
+    default:
+        // Yeilding and Invalid
+        assert(0);
+        return -1;
     }
 
     t->last_revent = 0;
@@ -1137,6 +1167,28 @@ static void task_cleanup(struct coro_task *t, enum coro_exit_how how)
     }
 }
 
+static char *task_defaultname(struct coro_task *t)
+{
+    char *name = NULL;
+    char tmp[256];
+    int size;
+
+    size = snprintf(tmp, 256, "<Task 0x%p>", t);
+
+    if (size <= 0) {
+        return NULL;
+    }
+
+    name = coro_zalloc(size + 1);
+    if (NULL == name) {
+        return NULL;
+    }
+
+    memcpy(name, tmp, size);
+    name[size] = '\0';
+    return name;
+}
+
 // Trigger Functions
 static struct coro_trigger *trigger_new(struct coro_loop *loop)
 {
@@ -1285,9 +1337,6 @@ static void trigger_destroy(struct coro_trigger *trigger)
         break;
     case CORO_IO:
         type->free_io(trigger->private);
-        break;
-    case CORO_IDLE:
-        type->free_idle(trigger->private);
         break;
     case CORO_ASYNC:
         type->free_async(trigger->private);
