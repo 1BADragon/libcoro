@@ -4,7 +4,7 @@
 #include <string.h>
 #include <coro.h>
 
-coro static void *reader(void *data)
+static void *reader(void *data)
 {
     int rc;
     char c;
@@ -26,7 +26,7 @@ coro static void *reader(void *data)
     return NULL;
 }
 
-coro static void *writer(void *data)
+static void *writer(void *data)
 {
     const char *message = "This is a test message!!!\n";
 

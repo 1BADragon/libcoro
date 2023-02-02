@@ -12,9 +12,6 @@
 extern "C" {
 #endif
 
-// dumb macro to help dev's note coroutines. Does not need to be used.
-#define coro
-
 /**
  * @macro CORO_FD_WAIT_READ
  * @brief Used to inform coro_wait_fd to wait for a read event to occur on the provided fd.
@@ -284,11 +281,11 @@ void coro_queue_delete(struct coro_queue *queue);
  * @brief Push new data to the coro queue. An optional free function can be provided to
  * clean any pending data when the queue is destoryed. The queue is not thread-safe.
  */
-int coro_queue_push(struct coro_queue *queue, void *data, void (*free_f)(void *));
+int coro_queue_push(struct coro_queue *queue, void *data, coro_void_f free_f);
 
 /**
  * @brief Pop data from the queue. Will block and yeild if no data is available on the queue. Will
- * return NULL if the queue is destoryed.
+ * return NULL if the queue is closed.
  *
  * @note Currently only one coroutine can wait for data at a time.
  */
@@ -392,9 +389,9 @@ long coro_write(int fd, const void *buf, unsigned long len);
 
 int coro_accept(int sock, struct sockaddr *addr, socklen_t *addr_len);
 long coro_recv(int sock, void *buf, unsigned long len, int flags);
-long coro_recvfrom(int sock, void *restrict buf, unsigned long len,
-                   int flags, struct sockaddr *restrict src_addr,
-                   socklen_t *restrict addrlen);
+long coro_recvfrom(int sock, void * buf, unsigned long len,
+                   int flags, struct sockaddr * src_addr,
+                   socklen_t * addrlen);
 long coro_recvmsg(int sock, struct msghdr *msg, int flags);
 long coro_send(int sock, const void *buf, unsigned long len, int flags);
 long coro_sendto(int sock, const void *buf, unsigned long len, int flags,

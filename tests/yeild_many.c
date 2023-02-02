@@ -3,9 +3,9 @@
 
 #include "test_harness.h"
 
-static coro void *generator_task(void *arg);
+static void *generator_task(void *arg);
 
-coro void *main_task(void *arg)
+void *main_task(void *arg)
 {
     void *val;
     uintptr_t expected = 0;
@@ -25,7 +25,7 @@ coro void *main_task(void *arg)
     return arg;
 }
 
-static coro void *generator_task(void *arg)
+static void *generator_task(void *arg)
 {
     uintptr_t i;
 

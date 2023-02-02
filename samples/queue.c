@@ -2,7 +2,7 @@
 #include <string.h>
 #include <coro.h>
 
-coro static void *reader(void *data)
+static void *reader(void *data)
 {
     struct coro_queue *queue = data;
     for (;;) {
@@ -17,7 +17,7 @@ coro static void *reader(void *data)
     return NULL;
 }
 
-coro static void *writer(void *data)
+static void *writer(void *data)
 {
     struct coro_queue *queue = data;
 

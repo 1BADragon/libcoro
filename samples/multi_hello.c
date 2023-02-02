@@ -3,7 +3,7 @@
 
 #define N 5
 
-coro static void *print_val(void *arg)
+static void *print_val(void *arg)
 {
     int t = *((int *)arg);
 
@@ -16,7 +16,7 @@ coro static void *print_val(void *arg)
     return NULL;
 }
 
-coro static void *print_hello(void *arg)
+static void *print_hello(void *arg)
 {
     (void)arg;
 
@@ -25,7 +25,7 @@ coro static void *print_hello(void *arg)
     return NULL;
 }
 
-coro static void *multi_entry(void *arg)
+static void *multi_entry(void *arg)
 {
     (void) arg;
     struct coro_task *tasks[N] = {NULL};

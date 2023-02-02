@@ -748,9 +748,9 @@ long coro_recv(int sock, void *buf, unsigned long len, int flags)
     return rc;
 }
 
-long coro_recvfrom(int sock, void *restrict buf, unsigned long len,
-                   int flags, struct sockaddr *restrict src_addr,
-                   socklen_t *restrict addrlen)
+long coro_recvfrom(int sock, void * buf, unsigned long len,
+                   int flags, struct sockaddr * src_addr,
+                   socklen_t * addrlen)
 {
     long rc;
 

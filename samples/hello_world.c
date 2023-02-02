@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <coro.h>
 
-coro static void *hello_world(void *arg)
+static void *hello_world(void *arg)
 {
     (void) arg;
 

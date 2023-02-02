@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <coro.h>
 
-coro static void *task1(void *data)
+static void *task1(void *data)
 {
     (void)data;
 
@@ -13,7 +13,7 @@ coro static void *task1(void *data)
     return NULL;
 }
 
-coro static void *task2(void *data)
+static void *task2(void *data)
 {
     coro_sleepms(500);
     return task1(data);
