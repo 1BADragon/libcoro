@@ -14,6 +14,7 @@ option(THREAD_SUPPORT "Build with threading support" OFF)
 option(THREAD_SAN "Build with thread sanitizer" OFF)
 
 option(ENABLE_LIBEV_BACKEND "Compile in libev backend and link" ON)
+option(ENABLE_SELECT_BACKEND "Compile with select backend and link" ON)
 
 include(CheckSymbolExists)
 include(deps/configure_ev.cmake)
@@ -27,7 +28,7 @@ set(coro_srcs
     src/coro_thread.h src/coro_thread_pthread.c
 
     # some header only things
-    src/coro_ctx.h src/macro.h src/list.h
+    src/coro_ctx.h src/macro.h src/list.h src/tree.h
 
     # backend api
     src/backends/coro_backend.h
@@ -63,6 +64,14 @@ if (ENABLE_LIBEV_BACKEND)
         src/backends/coro_backend_ev.c)
     target_link_libraries(coro PUBLIC ev m)
     target_compile_definitions(coro PRIVATE CORO_LIBEV_BACKEND_ENABLED=1)
+endif()
+
+if (ENABLE_SELECT_BACKEND)
+    target_sources(coro PRIVATE
+        # Custom config for libev
+        src/backends/coro_backend_select.h
+        src/backends/coro_backend_select.c)
+    target_compile_definitions(coro PRIVATE CORO_SELECT_BACKEND_ENABLED=1)
 endif()
 
 if (GNU_EXTENTIONS)

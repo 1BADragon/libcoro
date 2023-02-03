@@ -28,7 +28,13 @@ extern "C" {
  * @macro CORO_BACKEND_EV
  * @brief Used to indicate the libev backend is perfered.
  */
-#define CORO_BACKEND_EV (0x01)
+#define CORO_BACKEND_EV (1<<0)
+
+/**
+ * @macro CORO_BACKEND_SELECT
+ * @brief Used to indicate the select backend is perfered.
+ */
+#define CORO_BACKEND_SELECT (1<<1)
 
 /**
  * @struct coro_loop

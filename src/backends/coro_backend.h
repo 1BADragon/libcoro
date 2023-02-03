@@ -58,6 +58,6 @@ struct coro_backend_type {
  * @param flags One of CORO_BACKEND_* used to select backend.
  * @return Either a valid backend or NULL if one could not be selected.
  */
-struct coro_backend_type *coro_select_backend(int flags);
+struct coro_backend_type *coro_create_backend(int flags);
 
 #endif //CORO_BACKEND_H

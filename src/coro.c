@@ -72,7 +72,7 @@ struct coro_loop *coro_new_loop(int flags)
         goto error;
     }
 
-    c->backend_type = coro_select_backend(flags);
+    c->backend_type = coro_create_backend(flags);
     c->backend = c->backend_type->backend_new(flags);
     if (NULL == c->backend) {
         goto error;
